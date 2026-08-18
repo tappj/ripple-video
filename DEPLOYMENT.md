@@ -42,11 +42,9 @@ These steps require the owner's browser login, so they cannot be completed by an
 local coding session:
 
 1. Authenticate GitHub from this machine with `gh auth login -h github.com`.
-2. From this directory, create and push a private repository:
+2. From this directory, push the already-prepared `main` commit to a private repository:
 
    ```bash
-   git add .
-   git commit -m "Prepare Ripple for hosted beta"
    gh repo create ripple-video --private --source=. --remote=origin --push
    ```
 
