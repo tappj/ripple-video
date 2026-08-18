@@ -4,7 +4,6 @@ services:
     runtime: docker
     plan: free
     healthCheckPath: /healthz
-    maxShutdownDelaySeconds: 300
     envVars:
       - key: RUNWAYML_API_SECRET
         sync: false
