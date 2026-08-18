@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: ripple-video
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: RUNWAYML_API_SECRET
+        sync: false
+      - key: RUNWAY_SEEDANCE_ROUTER_CONFIG_ID
+        value: ripple-seedance-2
+      - key: RUNWAY_HAILUO_ROUTER_CONFIG_ID
+        value: ripple-hailuo-3
+      - key: RIPPLE_ACCESS_PASSWORD
+        generateValue: true
+      - key: RIPPLE_DATA_DIR
+        value: /data/ripple
+      - key: RIPPLE_CACHE_DIR
+        value: /data/cache
+      - key: RIPPLE_MAX_UPLOAD_MIB
+        value: "256"

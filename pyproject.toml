@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cutdetect"
+version = "0.1.0"
+description = "Jump-cut detection for talking-head video"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Cut Detection contributors"}]
+dependencies = [
+  "av>=18.0,<19",
+  "numpy>=1.26,<2.4",
+  "runwayml>=5.13,<6",
+]
+
+[project.optional-dependencies]
+baselines = [
+  "numpy>=1.26,<2",
+  "scenedetect-headless>=0.7.1,<0.8",
+  "transnetv2-pytorch>=1.0.5,<1.1",
+]
+features = [
+  "mediapipe>=0.10.21,<0.11",
+  "opencv-contrib-python>=4.11,<5",
+  "scipy>=1.11,<2",
+]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+cutdetect = "cutdetect.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cutdetect"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["cutdetect"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

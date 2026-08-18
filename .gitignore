@@ -1,0 +1,29 @@
+.venv/
+.venv311/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.cutdetect/
+.DS_Store
+
+# Local inputs, generated media, and reports must never be published with the app.
+/outputs/
+/eval/**
+!/eval/.gitkeep
+/plan*.md
+/final.mp4
+/*.mp4
+/*.mp3
+/*.wav
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.csv
+
+# Local secrets. Keep the names-only example tracked.
+.env
+.env.*
+!.env.example
