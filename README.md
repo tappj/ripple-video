@@ -40,7 +40,6 @@ it is started, without executing it as shell code. Copy the variable names from
 ```dotenv
 RUNWAYML_API_SECRET=
 RUNWAY_SEEDANCE_ROUTER_CONFIG_ID=ripple-seedance-2
-RUNWAY_HAILUO_ROUTER_CONFIG_ID=ripple-hailuo-3
 ```
 
 Never commit `.env`, paste keys into documentation, or send them through chat. Exported
@@ -108,14 +107,15 @@ should be allowed:
 .venv311/bin/cutdetect pipeline run-job JOB_ID --max-credits ESTIMATED_CREDITS
 ```
 
-New jobs use two single-model Runway Model Router configs, allowing Ripple's model selector to stay
-deterministic. The worker uploads the face and voice once, gives every clip a separate source upload
-and a brand-new task, submits every eligible clip before polling, saves outputs immediately, and
-records state transitions in SQLite. It dry-runs the exact routed payload first to verify the chosen
-model and current cost without charging credits. Re-running the same command resumes existing task
-IDs instead of rebilling completed clips. Use `--once` to advance one worker cycle and exit. Older
-saved Workflow/direct jobs remain resumable. See [RIPPLE_MODEL_ROUTER_MIGRATION.md](RIPPLE_MODEL_ROUTER_MIGRATION.md)
-for the required router names, config IDs, architecture changes, and concurrency setup.
+New Seedance jobs use a single-model Runway Model Router config, while Hailuo 3 uses its pinned
+direct API route because Runway does not currently expose Hailuo in the router catalog. The worker
+uploads the face and voice once, gives every clip a separate source upload and a brand-new task,
+submits every eligible clip before polling, saves outputs immediately, and records state transitions
+in SQLite. Seedance dry-runs the exact routed payload first to verify the model and current cost
+without charging credits. Re-running the same command resumes existing task IDs instead of rebilling
+completed clips. Use `--once` to advance one worker cycle and exit. Older Workflow/direct/router
+jobs remain resumable. See [RIPPLE_MODEL_ROUTER_MIGRATION.md](RIPPLE_MODEL_ROUTER_MIGRATION.md) for
+the required Seedance router, architecture changes, and concurrency setup.
 
 ## Review gate
 

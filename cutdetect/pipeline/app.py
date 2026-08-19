@@ -72,7 +72,12 @@ def _boot_payload() -> dict[str, object]:
                 "resolutions": ROUTER_RESOLUTIONS[model_id],
                 "defaultRatio": "9:16",
                 "defaultResolution": "768P" if model_id == "hailuo3" else "720p",
-                "routerConfigId": model_router_config_id(cast(RunwayReferenceModel, model_id)),
+                "routeLabel": "Direct API" if model_id == "hailuo3" else "Model Router",
+                "routeDetail": (
+                    "hailuo3"
+                    if model_id == "hailuo3"
+                    else model_router_config_id(cast(RunwayReferenceModel, model_id))
+                ),
                 "minDuration": caps.min_duration_s,
                 "maxDuration": caps.max_duration_s,
                 "supportsInternalCuts": caps.supports_internal_cuts,

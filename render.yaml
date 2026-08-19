@@ -9,8 +9,6 @@ services:
         sync: false
       - key: RUNWAY_SEEDANCE_ROUTER_CONFIG_ID
         value: ripple-seedance-2
-      - key: RUNWAY_HAILUO_ROUTER_CONFIG_ID
-        value: ripple-hailuo-3
       - key: RIPPLE_ACCESS_PASSWORD
         generateValue: true
       - key: RIPPLE_DATA_DIR

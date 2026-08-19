@@ -1,41 +1,40 @@
-# Ripple Model Router migration
+# Ripple generation-route migration
 
-Date: 2026-08-16
+Updated: 2026-08-19
 
 ## Required Runway configuration
 
-Ripple exposes an explicit model selector. Because a Model Router normally chooses a model for
-the caller, deterministic user selection requires one single-model router per choice.
+Ripple exposes an explicit model selector. Seedance 2 is available in Runway's Model Router
+catalog, so its deterministic user choice uses one single-model router. Hailuo 3 is available to
+the organization and direct video-to-video API but does not appear in the router catalog; Hailuo
+therefore stays pinned through its direct API endpoint.
 
 | UI choice | Name | Config ID | Eligible-model mode | Models | Optimize for |
 |---|---|---|---|---|---|
 | Seedance 2 | `Ripple — Seedance 2` | `ripple-seedance-2` | Allow list | `seedance2` only | Quality |
-| Hailuo 3 | `Ripple — Hailuo 3` | `ripple-hailuo-3` | Allow list | `hailuo3` only | Quality |
 
 Use these descriptions:
 
-- Seedance: `Ripple production video routing pinned to Seedance 2 for independent video + face + voice recreations.`
-- Hailuo: `Ripple production video routing pinned to Hailuo 3 for independent video + face + voice recreations.`
+- `Ripple production video routing pinned to Seedance 2 for independent video + face + voice recreations.`
 
 Leave the router-level maximum video credits unset. Ripple calculates every clip's model-specific
 cost and enforces a hard total job ceiling before paid submissions. A fixed per-generation router
 cap would incorrectly reject valid high-resolution or longer clips.
 
-The config IDs above work without more local changes. If different immutable config IDs are used,
-set them in `.env`:
+The config ID above works without more local changes. If a different immutable config ID is used,
+set it in `.env`:
 
 ```dotenv
 RUNWAY_SEEDANCE_ROUTER_CONFIG_ID=
-RUNWAY_HAILUO_ROUTER_CONFIG_ID=
 ```
 
 ## Architecture change
 
-New Ripple jobs now use Runway's `POST /v1/generate/video` Model Router endpoint for both model
-choices. The old published Seedance Workflow and direct Hailuo route remain in the code only so
-already-created jobs can resume safely.
+New Seedance jobs use Runway's `POST /v1/generate/video` Model Router endpoint. New Hailuo jobs use
+the direct `hailuo3` video-to-video contract with source video, face image, and optional voice
+reference. The old published Seedance Workflow and previously saved routes remain resumable.
 
-Before any paid routed task, Ripple now:
+Before any paid Seedance routed task, Ripple:
 
 1. Confirms the selected config exists and is allow-listed to exactly the selected model.
 2. Uploads the original face and optional voice references once for the job.
@@ -43,6 +42,9 @@ Before any paid routed task, Ripple now:
 4. Sends a no-charge router dry run with the exact live payload.
 5. Verifies the resolved model and current credit estimate.
 6. Creates a brand-new Runway task for that clip.
+
+Hailuo skips router validation but still uploads each source clip separately and creates a new
+direct task for every clip. It never feeds a generated output into a later task.
 
 Every clip task receives only its own original source section, the original target references, and
 the current prompt. A generated clip is never used as the source for another clip or retry. Task
@@ -56,8 +58,8 @@ organization has capacity.
 
 The live organization currently reports a concurrency limit of **1** and a rolling limit of **50**
 daily generations for both `seedance2` and `hailuo3`. All video models share the organization's
-video concurrency pool; using two routers or two API keys in the same organization does not increase
-it.
+video concurrency pool; changing routes or using two API keys in the same organization does not
+increase it.
 
 Runway's current self-serve thresholds are:
 

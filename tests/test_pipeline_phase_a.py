@@ -8,6 +8,7 @@ from cutdetect.pipeline.capabilities import (
     closest_seedance_ratio,
     credit_cost,
 )
+from cutdetect.pipeline.orchestration import DIRECT_API_ROUTE, generation_route
 from cutdetect.pipeline.probe_suite import PROBE_CREDIT_CEILING
 from cutdetect.pipeline.runway_client import (
     DEFAULT_MODEL_ROUTER_CONFIG_IDS,
@@ -90,8 +91,8 @@ def test_model_router_payload_is_model_agnostic_and_keeps_all_references() -> No
         duration=6,
         ratio="9:16",
         reference_video_duration_sec=5.466667,
-        model="hailuo3",
-        resolution="768P",
+        model="seedance2",
+        resolution="720p",
     )
 
     assert request.router_payload() == {
@@ -104,9 +105,11 @@ def test_model_router_payload_is_model_agnostic_and_keeps_all_references() -> No
         "reference_videos": [{"uri": "runway://video", "role": "source"}],
         "reference_audio": [{"uri": "runway://audio"}],
     }
-    assert model_router_route("hailuo3") == (
-        "router:" + DEFAULT_MODEL_ROUTER_CONFIG_IDS["hailuo3"]
+    assert model_router_route("seedance2") == (
+        "router:" + DEFAULT_MODEL_ROUTER_CONFIG_IDS["seedance2"]
     )
+    assert generation_route("seedance2") == "router:ripple-seedance-2"
+    assert generation_route("hailuo3") == DIRECT_API_ROUTE
     assert credit_cost("seedance2", 8, "720p") == 288
     assert credit_cost("seedance2", 8, "4K") == 1200
 
@@ -115,12 +118,12 @@ def test_router_gateway_validates_dry_runs_then_starts_a_fresh_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, object]] = []
-    config_id = DEFAULT_MODEL_ROUTER_CONFIG_IDS["hailuo3"]
+    config_id = DEFAULT_MODEL_ROUTER_CONFIG_IDS["seedance2"]
 
     class FakeRouters:
         def list(self, *, limit: int) -> list[SimpleNamespace]:
             calls.append(("list", limit))
-            models = SimpleNamespace(mode="allowlist_only", ids=["hailuo3"])
+            models = SimpleNamespace(mode="allowlist_only", ids=["seedance2"])
             return [
                 SimpleNamespace(
                     slug=config_id,
@@ -142,8 +145,8 @@ def test_router_gateway_validates_dry_runs_then_starts_a_fresh_task(
         def post(self, path: str, *, cast_to: object, body: object) -> SimpleNamespace:
             calls.append(("dry-run", {"path": path, "cast_to": cast_to, "body": body}))
             routing = SimpleNamespace(
-                model="hailuo3",
-                estimated_cost=SimpleNamespace(credits=117.0),
+                model="seedance2",
+                estimated_cost=SimpleNamespace(credits=216.0),
             )
             return SimpleNamespace(routing=routing)
 
@@ -156,15 +159,15 @@ def test_router_gateway_validates_dry_runs_then_starts_a_fresh_task(
         duration=6,
         ratio="9:16",
         reference_video_duration_sec=5.466667,
-        model="hailuo3",
-        resolution="768P",
+        model="seedance2",
+        resolution="720p",
     )
     gateway = RunwayRouterGateway(
         api_key="key_test",
         logger=JsonlCallLogger(tmp_path / "calls.jsonl"),
         storage=LocalDiskStorage(tmp_path),
         config_id=config_id,
-        expected_model="hailuo3",
+        expected_model="seedance2",
     )
 
     assert gateway.submit(request) == "fresh-task-id"

@@ -40,6 +40,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "URL.createObjectURL(file)" in html
     assert "fresh task per clip" in html
     assert "Hailuo 3" in html
+    assert "Direct API" in html
+    assert "Generation route" in html
     assert "Replace the person in Video 1 with the person from Image 1" in html
     assert "woman from Image 1" not in html
     assert "Confirm & generate" not in html

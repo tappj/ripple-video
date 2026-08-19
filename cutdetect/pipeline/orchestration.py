@@ -43,6 +43,15 @@ from cutdetect.pipeline.workflow_client import (
 DIRECT_API_ROUTE = "direct-reference-v1"
 
 
+def generation_route(model_id: str) -> str:
+    """Use the router catalog where available and a pinned direct model otherwise."""
+    if model_id == "seedance2":
+        return model_router_route("seedance2")
+    if model_id == "hailuo3":
+        return DIRECT_API_ROUTE
+    raise PipelineError(f"unsupported direct reference model: {model_id}")
+
+
 class JobState(StrEnum):
     DRAFT = "DRAFT"
     ESTIMATING = "ESTIMATING"
@@ -1239,7 +1248,7 @@ def prepare_phase_c_job(
         raise PipelineError(f"unsupported direct reference model: {model_id}")
     selected_ratio = ratio or "9:16"
     selected_resolution = resolution or ("768P" if model_id == "hailuo3" else "720p")
-    route_id = model_router_route(cast(RunwayReferenceModel, model_id))
+    route_id = generation_route(model_id)
     grouping = plan_from_predictions(
         prediction_path,
         model_id=model_id,

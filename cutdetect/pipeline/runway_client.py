@@ -56,11 +56,9 @@ GenerationStatus = Literal["PENDING", "THROTTLED", "RUNNING", "SUCCEEDED", "FAIL
 MODEL_ROUTER_ROUTE_PREFIX = "router:"
 DEFAULT_MODEL_ROUTER_CONFIG_IDS: dict[RunwayReferenceModel, str] = {
     "seedance2": "ripple-seedance-2",
-    "hailuo3": "ripple-hailuo-3",
 }
 MODEL_ROUTER_ENV_KEYS: dict[RunwayReferenceModel, str] = {
     "seedance2": "RUNWAY_SEEDANCE_ROUTER_CONFIG_ID",
-    "hailuo3": "RUNWAY_HAILUO_ROUTER_CONFIG_ID",
 }
 
 
@@ -211,6 +209,8 @@ def seedance_ratio(value: str) -> SeedanceRatio:
 
 def model_router_config_id(model: RunwayReferenceModel) -> str:
     """Return the overridable stable config ID used for one selected model."""
+    if model != "seedance2":
+        raise RouterConfigurationError(f"{model} is not available in the Model Router catalog")
     return os.environ.get(MODEL_ROUTER_ENV_KEYS[model]) or DEFAULT_MODEL_ROUTER_CONFIG_IDS[model]
 
 

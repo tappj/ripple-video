@@ -20,18 +20,17 @@ cache, and virtual environment.
 
 ## One-time Runway setup
 
-Create these two single-model routers in the Runway developer organization before expecting the
-Generate button to complete:
+Create this single-model router in the Runway developer organization before expecting Seedance
+generations to complete. Hailuo 3 uses Runway's direct API because it is not currently offered in
+the Model Router catalog.
 
 | UI choice | Router name | Config ID | Allow-listed model |
 |---|---|---|---|
 | Seedance 2 | `Ripple — Seedance 2` | `ripple-seedance-2` | `seedance2` only |
-| Hailuo 3 | `Ripple — Hailuo 3` | `ripple-hailuo-3` | `hailuo3` only |
 
-Use these descriptions:
+Use this description:
 
 - `Ripple production video routing pinned to Seedance 2 for independent video + face + voice recreations.`
-- `Ripple production video routing pinned to Hailuo 3 for independent video + face + voice recreations.`
 
 Choose Quality optimization and leave the router-wide maximum video credits unset. Full details
 are in [RIPPLE_MODEL_ROUTER_MIGRATION.md](RIPPLE_MODEL_ROUTER_MIGRATION.md).
@@ -73,7 +72,6 @@ are in place.
 |---|---|---|
 | `RUNWAYML_API_SECRET` | none | Server-only Runway developer API credential |
 | `RUNWAY_SEEDANCE_ROUTER_CONFIG_ID` | `ripple-seedance-2` | Seedance router config |
-| `RUNWAY_HAILUO_ROUTER_CONFIG_ID` | `ripple-hailuo-3` | Hailuo router config |
 | `RIPPLE_ACCESS_PASSWORD` | none | Optional shared beta password |
 | `RIPPLE_MAX_UPLOAD_MIB` | `256` | Maximum size of each uploaded asset |
 | `RIPPLE_DATA_DIR` | `/data/ripple` | Jobs, SQLite, uploads, and output media |
