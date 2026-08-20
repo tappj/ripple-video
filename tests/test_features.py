@@ -9,6 +9,7 @@ import pytest
 from cutdetect.config import FeatureConfig
 from cutdetect.features import (
     _audio_features,
+    _disk_array,
     _frame_grid,
     _mel_filterbank,
     load_feature_metadata,
@@ -43,6 +44,15 @@ def test_frame_grid_preserves_vertical_aspect_ratio(tmp_path: Path) -> None:
     assert _frame_grid(_context(tmp_path), 96) == (96, 171)
 
 
+def test_large_feature_arrays_are_disk_backed(tmp_path: Path) -> None:
+    array = _disk_array(tmp_path, "flow", (120, 96, 54, 2), np.float16, fill=np.nan)
+
+    assert isinstance(array, np.memmap)
+    assert array.shape == (120, 96, 54, 2)
+    assert array.filename is not None
+    assert Path(array.filename) == tmp_path / "flow.npy"
+
+
 def test_mel_filterbank_is_nonnegative_and_has_expected_shape() -> None:
     filters = _mel_filterbank(48_000, 2048, 40, 50.0, 12_000.0)
 
@@ -63,14 +73,18 @@ def test_audio_features_use_five_millisecond_grid(tmp_path: Path) -> None:
         output.setsampwidth(2)
         output.setframerate(sample_rate)
         output.writeframes(samples.tobytes())
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
 
-    features = _audio_features(_context(tmp_path, audio_path), FeatureConfig())
+    features = _audio_features(_context(tmp_path, audio_path), FeatureConfig(), scratch_dir)
 
     times = features["audio_times_sec"]
     assert times.shape[0] > 10
     assert float(times[1] - times[0]) == pytest.approx(0.005)
     assert features["audio_log_mel"].shape[1] == 40
     assert features["audio_mfcc"].shape[1] == 13
+    assert isinstance(features["audio_waveform"], np.memmap)
+    assert (scratch_dir / "audio_power.npy").is_file()
 
 
 def test_load_feature_metadata(tmp_path: Path) -> None:

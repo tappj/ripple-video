@@ -273,6 +273,7 @@ def _discover_features(context: VideoContext) -> Path | None:
         if (
             metadata.get("video_content_sha256") == context.cache_key
             and metadata.get("frame_count") == context.frame_count
+            and metadata.get("extractor_version") == FeatureConfig().extractor_version
         ):
             return candidate
     return None

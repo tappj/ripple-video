@@ -8,7 +8,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RIPPLE_CACHE_DIR=/data/cache \
     RIPPLE_MAX_UPLOAD_MIB=256 \
     EGL_PLATFORM=surfaceless \
-    LIBGL_ALWAYS_SOFTWARE=true
+    LIBGL_ALWAYS_SOFTWARE=true \
+    MALLOC_ARENA_MAX=2 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

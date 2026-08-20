@@ -84,7 +84,7 @@ class BaselineConfig:
 class FeatureConfig:
     """Phase 2 visual/audio feature extraction settings."""
 
-    extractor_version: str = "1.0"
+    extractor_version: str = "1.1"
     # Landmarker input is reduced for CPU throughput; outputs remain normalized
     # and are projected back into source-pixel coordinates.
     face_input_width_px: int = 360

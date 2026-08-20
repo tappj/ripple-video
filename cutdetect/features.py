@@ -7,6 +7,7 @@ import importlib
 import json
 import math
 import os
+import tempfile
 import time
 import wave
 from collections.abc import Mapping
@@ -17,8 +18,9 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 
-from cutdetect.config import FeatureConfig, IngestConfig
+from cutdetect.config import FeatureConfig, IngestConfig, SignalConfig
 from cutdetect.ingest import VideoContext, ingest_video, iter_rgb_frames
+from cutdetect.signals import background_delta, flow_incoherence, stabilized_residual
 
 FACE_LANDMARKER_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
@@ -139,6 +141,28 @@ def _frame_grid(context: VideoContext, width: int) -> tuple[int, int]:
     return width, height
 
 
+def _disk_array(
+    scratch_dir: Path,
+    name: str,
+    shape: tuple[int, ...],
+    dtype: npt.DTypeLike,
+    *,
+    fill: float | bool | None = None,
+) -> npt.NDArray[Any]:
+    """Create a file-backed array so long clips do not consume proportional RAM."""
+    if math.prod(shape) == 0:
+        return np.empty(shape, dtype=dtype)
+    array = np.lib.format.open_memmap(  # type: ignore[no-untyped-call]
+        scratch_dir / f"{name}.npy",
+        mode="w+",
+        dtype=dtype,
+        shape=shape,
+    )
+    if fill is not None:
+        array.fill(fill)
+    return cast(npt.NDArray[Any], array)
+
+
 def _new_writer(cv2: Any, path: Path, context: VideoContext, config: FeatureConfig) -> Any:
     if len(config.overlay_codec) != 4:
         raise ValueError("overlay_codec must contain exactly four characters")
@@ -242,8 +266,12 @@ def _visual_features(
     model_path: Path,
     overlay_path: Path,
     config: FeatureConfig,
+    scratch_dir: Path,
 ) -> dict[str, npt.NDArray[Any]]:
     cv2 = _optional_module("cv2")
+    cv2.setNumThreads(1)
+    if hasattr(cv2, "ocl"):
+        cv2.ocl.setUseOpenCL(False)
     # MediaPipe imports matplotlib; provide a persistent writable cache so the
     # import does not rebuild font metadata on every CLI invocation.
     mpl_cache = context.artifact_dir.parent / "matplotlib"
@@ -264,19 +292,48 @@ def _visual_features(
     )
     small_width, small_height = _frame_grid(context, config.downscale_width_px)
     face_width, face_height = _frame_grid(context, config.face_input_width_px)
-    frame_times = np.full(context.frame_count, np.nan, dtype=np.float64)
-    available = np.zeros(context.frame_count, dtype=np.bool_)
-    pose = np.full((context.frame_count, 4, 4), np.nan, dtype=np.float32)
-    bbox = np.full((context.frame_count, 4), np.nan, dtype=np.float32)
-    scale = np.full(context.frame_count, np.nan, dtype=np.float32)
-    centroid = np.full((context.frame_count, 2), np.nan, dtype=np.float32)
-    grayscale = np.empty((context.frame_count, small_height, small_width), dtype=np.uint8)
-    histogram = np.empty((context.frame_count, config.hsv_histogram_bins * 3), dtype=np.float32)
-    flow = np.empty(
-        (max(0, context.frame_count - 1), small_height, small_width, 2), dtype=np.float16
+    frame_times = _disk_array(
+        scratch_dir, "frame_times", (context.frame_count,), np.float64, fill=np.nan
     )
-    landmark_items: list[npt.NDArray[np.float32] | None] = []
-    blendshape_items: list[npt.NDArray[np.float32] | None] = []
+    available = _disk_array(
+        scratch_dir, "face_available", (context.frame_count,), np.bool_, fill=False
+    )
+    pose = _disk_array(
+        scratch_dir,
+        "face_pose",
+        (context.frame_count, 4, 4),
+        np.float32,
+        fill=np.nan,
+    )
+    bbox = _disk_array(
+        scratch_dir, "face_bbox", (context.frame_count, 4), np.float32, fill=np.nan
+    )
+    scale = _disk_array(
+        scratch_dir, "face_scale", (context.frame_count,), np.float32, fill=np.nan
+    )
+    centroid = _disk_array(
+        scratch_dir, "face_centroid", (context.frame_count, 2), np.float32, fill=np.nan
+    )
+    grayscale = _disk_array(
+        scratch_dir,
+        "grayscale",
+        (context.frame_count, small_height, small_width),
+        np.uint8,
+    )
+    histogram = _disk_array(
+        scratch_dir,
+        "hsv_histogram",
+        (context.frame_count, config.hsv_histogram_bins * 3),
+        np.float32,
+    )
+    flow = _disk_array(
+        scratch_dir,
+        "dense_flow",
+        (max(0, context.frame_count - 1), small_height, small_width, 2),
+        np.float16,
+    )
+    landmarks_array: npt.NDArray[np.float32] | None = None
+    blendshapes_array: npt.NDArray[np.float32] | None = None
     blendshape_names: tuple[str, ...] = ()
     previous_gray: npt.NDArray[np.uint8] | None = None
     writer = _new_writer(cv2, overlay_path, context, config)
@@ -324,18 +381,38 @@ def _visual_features(
                 result = landmarker.detect_for_video(image, timestamp_ms)
                 values = _face_values(result, context.width, context.height)
                 if values is None:
-                    landmark_items.append(None)
-                    blendshape_items.append(None)
                     writer.write(_draw_overlay(cv2, rgb, None, None, None, config))
                     continue
                 landmarks, matrix, blendshapes, names, box, face_scale, center = values
+                if landmarks_array is None:
+                    landmarks_array = cast(
+                        npt.NDArray[np.float32],
+                        _disk_array(
+                            scratch_dir,
+                            "face_landmarks",
+                            (context.frame_count, len(landmarks), 3),
+                            np.float32,
+                            fill=np.nan,
+                        ),
+                    )
+                if blendshapes_array is None:
+                    blendshapes_array = cast(
+                        npt.NDArray[np.float32],
+                        _disk_array(
+                            scratch_dir,
+                            "face_blendshapes",
+                            (context.frame_count, len(blendshapes)),
+                            np.float32,
+                            fill=np.nan,
+                        ),
+                    )
                 available[index] = True
                 pose[index] = matrix
                 bbox[index] = box
                 scale[index] = face_scale
                 centroid[index] = center
-                landmark_items.append(landmarks)
-                blendshape_items.append(blendshapes)
+                landmarks_array[index] = landmarks
+                blendshapes_array[index] = blendshapes
                 if not blendshape_names:
                     blendshape_names = names
                 writer.write(_draw_overlay(cv2, rgb, landmarks, matrix, box, config))
@@ -343,22 +420,42 @@ def _visual_features(
         writer.release()
     if decoded_count != context.frame_count:
         raise FeatureError(f"decoded {decoded_count} frames; expected {context.frame_count}")
-    landmark_count = next(
-        (len(item) for item in landmark_items if item is not None),
-        0,
+    if landmarks_array is None:
+        landmarks_array = np.empty((context.frame_count, 0, 3), dtype=np.float32)
+    if blendshapes_array is None:
+        blendshapes_array = np.empty((context.frame_count, 0), dtype=np.float32)
+    for array in (
+        frame_times,
+        available,
+        pose,
+        bbox,
+        scale,
+        centroid,
+        grayscale,
+        histogram,
+        flow,
+        landmarks_array,
+        blendshapes_array,
+    ):
+        if isinstance(array, np.memmap):
+            array.flush()
+    signal_settings = SignalConfig()
+    flow_score, flow_auxiliary = flow_incoherence(flow, signal_settings)
+    stabilized_score = stabilized_residual(
+        grayscale,
+        landmarks_array,
+        bbox,
+        available,
+        (context.width, context.height),
+        signal_settings,
     )
-    blendshape_count = next(
-        (len(item) for item in blendshape_items if item is not None),
-        0,
+    background_score, captions_masked = background_delta(
+        grayscale,
+        bbox,
+        (context.width, context.height),
+        config.hsv_histogram_bins,
+        signal_settings,
     )
-    landmarks_array = np.full((context.frame_count, landmark_count, 3), np.nan, dtype=np.float32)
-    blendshapes_array = np.full((context.frame_count, blendshape_count), np.nan, dtype=np.float32)
-    for index, item in enumerate(landmark_items):
-        if item is not None:
-            landmarks_array[index] = item
-    for index, item in enumerate(blendshape_items):
-        if item is not None:
-            blendshapes_array[index] = item
     return {
         "frame_times_sec": frame_times,
         "face_available": available,
@@ -369,9 +466,13 @@ def _visual_features(
         "face_bbox_px": bbox,
         "face_scale_px": scale,
         "face_centroid_px": centroid,
-        "grayscale": grayscale,
         "hsv_histograms": histogram,
-        "dense_flow": flow,
+        "flow_incoherence": flow_score,
+        "flow_magnitude": flow_auxiliary["flow_magnitude"],
+        "flow_inlier_ratio": flow_auxiliary["flow_inlier_ratio"],
+        "stabilized_residual": stabilized_score,
+        "background_delta": background_score,
+        "captions_region_masked": np.asarray(captions_masked, dtype=np.bool_),
     }
 
 
@@ -405,16 +506,37 @@ def _mel_filterbank(
     return filters
 
 
-def _read_pcm16(path: Path) -> tuple[int, npt.NDArray[np.float32]]:
+def _read_pcm16(
+    path: Path, scratch_dir: Path | None = None
+) -> tuple[int, npt.NDArray[np.float32]]:
     with wave.open(str(path), "rb") as handle:
         if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
             raise FeatureError("ingested audio must be mono 16-bit PCM")
         sample_rate = handle.getframerate()
-        samples = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2")
-    return sample_rate, samples.astype(np.float32) / 32768.0
+        frame_count = handle.getnframes()
+        if scratch_dir is None:
+            samples = np.frombuffer(handle.readframes(frame_count), dtype="<i2")
+            return sample_rate, samples.astype(np.float32) / 32768.0
+        waveform = cast(
+            npt.NDArray[np.float32],
+            _disk_array(scratch_dir, "audio_waveform", (frame_count,), np.float32),
+        )
+        offset = 0
+        while offset < frame_count:
+            chunk = handle.readframes(min(65_536, frame_count - offset))
+            if not chunk:
+                raise FeatureError("audio stream ended before its declared frame count")
+            samples = np.frombuffer(chunk, dtype="<i2")
+            waveform[offset : offset + len(samples)] = samples.astype(np.float32) / 32768.0
+            offset += len(samples)
+    return sample_rate, waveform
 
 
-def _audio_features(context: VideoContext, config: FeatureConfig) -> dict[str, npt.NDArray[Any]]:
+def _audio_features(
+    context: VideoContext,
+    config: FeatureConfig,
+    scratch_dir: Path | None = None,
+) -> dict[str, npt.NDArray[Any]]:
     if context.audio_path is None:
         return {
             "audio_sample_rate": np.asarray(0, dtype=np.int32),
@@ -430,16 +552,32 @@ def _audio_features(context: VideoContext, config: FeatureConfig) -> dict[str, n
             "audio_voicing": np.empty(0, dtype=np.float32),
         }
     scipy_fft = _optional_module("scipy.fft")
-    sample_rate, waveform = _read_pcm16(context.audio_path)
+    sample_rate, waveform = _read_pcm16(context.audio_path, scratch_dir)
     hop = max(1, round(sample_rate * config.audio_hop_ms / 1000.0))
     window_size = max(hop, round(sample_rate * config.audio_window_ms / 1000.0))
     if config.audio_fft_size < window_size:
         raise ValueError("audio_fft_size must be at least the audio window size")
-    padded = np.pad(waveform, (window_size // 2, window_size // 2))
+    pad_width = window_size // 2
+    if scratch_dir is None:
+        padded = np.pad(waveform, (pad_width, pad_width))
+    else:
+        padded = _disk_array(
+            scratch_dir,
+            "audio_padded",
+            (len(waveform) + pad_width * 2,),
+            np.float32,
+            fill=0.0,
+        )
+        padded[pad_width : pad_width + len(waveform)] = waveform
     frame_count = 1 + (len(padded) - window_size) // hop
     frames = np.lib.stride_tricks.sliding_window_view(padded, window_size)[::hop][:frame_count]
     window = np.hanning(window_size).astype(np.float32)
-    power = np.empty((frame_count, config.audio_fft_size // 2 + 1), dtype=np.float32)
+    power_shape = (frame_count, config.audio_fft_size // 2 + 1)
+    power = (
+        np.empty(power_shape, dtype=np.float32)
+        if scratch_dir is None
+        else _disk_array(scratch_dir, "audio_power", power_shape, np.float32)
+    )
     f0 = np.full(frame_count, np.nan, dtype=np.float32)
     voicing = np.zeros(frame_count, dtype=np.float32)
     block_size = 512
@@ -531,35 +669,38 @@ def extract_features(
         if cached is not None:
             return cached
     started = time.perf_counter()
-    visual = _visual_features(context, model, overlay_path, settings)
-    audio = _audio_features(context, settings)
-    elapsed = time.perf_counter() - started
-    availability = np.asarray(visual["face_available"], dtype=np.bool_)
-    metadata: dict[str, object] = {
-        "schema_version": "1.0",
-        "extractor_version": settings.extractor_version,
-        "video_content_sha256": context.cache_key,
-        "model_sha256": _sha256(model),
-        "model_path": str(model),
-        "frame_count": context.frame_count,
-        "fps": float(context.fps),
-        "source_width": context.width,
-        "source_height": context.height,
-        "face_count": int(np.count_nonzero(availability)),
-        "face_detection_rate": float(np.mean(availability)) if len(availability) else 0.0,
-        "elapsed_sec": elapsed,
-        "config": {
-            name: str(value) if isinstance(value, Path) else value
-            for name, value in asdict(settings).items()
-        },
-    }
-    _save_archive(feature_path, {**visual, **audio}, metadata)
+    with tempfile.TemporaryDirectory(prefix=".feature-scratch-", dir=context.artifact_dir) as raw:
+        visual = _visual_features(context, model, overlay_path, settings, Path(raw))
+        audio = _audio_features(context, settings, Path(raw))
+        elapsed = time.perf_counter() - started
+        availability = np.asarray(visual["face_available"], dtype=np.bool_)
+        face_count = int(np.count_nonzero(availability))
+        face_detection_rate = float(np.mean(availability)) if len(availability) else 0.0
+        metadata: dict[str, object] = {
+            "schema_version": "1.0",
+            "extractor_version": settings.extractor_version,
+            "video_content_sha256": context.cache_key,
+            "model_sha256": _sha256(model),
+            "model_path": str(model),
+            "frame_count": context.frame_count,
+            "fps": float(context.fps),
+            "source_width": context.width,
+            "source_height": context.height,
+            "face_count": face_count,
+            "face_detection_rate": face_detection_rate,
+            "elapsed_sec": elapsed,
+            "config": {
+                name: str(value) if isinstance(value, Path) else value
+                for name, value in asdict(settings).items()
+            },
+        }
+        _save_archive(feature_path, {**visual, **audio}, metadata)
     return FeatureExtractionResult(
         feature_path=feature_path,
         overlay_path=overlay_path,
         frame_count=context.frame_count,
-        face_count=int(np.count_nonzero(availability)),
-        face_detection_rate=float(np.mean(availability)) if len(availability) else 0.0,
+        face_count=face_count,
+        face_detection_rate=face_detection_rate,
         elapsed_sec=elapsed,
         cache_hit=False,
         extractor_version=settings.extractor_version,

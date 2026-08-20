@@ -177,6 +177,7 @@ class _PipelineServer(ThreadingHTTPServer):
     html: bytes
     sessions: dict[str, dict[str, object]]
     session_lock: threading.Lock
+    analysis_lock: threading.Lock
     active_jobs: set[str]
     active_lock: threading.Lock
 
@@ -482,31 +483,48 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         def work() -> None:
             try:
                 session_dir = self.server.root / "staging" / session_id
-                detection = run_detection(
-                    video,
-                    session_dir / "detection",
-                    cache_dir=self.server.cache_dir,
-                )
-                with self.server.session_lock:
-                    self.server.sessions[session_id].update(
-                        stage="Grouping complete sections…",
-                        message="Balancing 4–10 second generation clips without moving a cut.",
+                if not self.server.analysis_lock.acquire(blocking=False):
+                    with self.server.session_lock:
+                        self.server.sessions[session_id].update(
+                            stage="Queued for analysis…",
+                            message="Another source is being analyzed on this instance.",
+                        )
+                    self.server.analysis_lock.acquire()
+                try:
+                    with self.server.session_lock:
+                        self.server.sessions[session_id].update(
+                            stage="Detecting hard cuts…",
+                            message="Reading visual and audio boundary evidence.",
+                        )
+                    detection = run_detection(
+                        video,
+                        session_dir / "detection",
+                        cache_dir=self.server.cache_dir,
                     )
-                prepared = prepare_phase_c_job(
-                    video,
-                    image,
-                    audio,
-                    predictions=detection.predictions_path,
-                    output_root=self.server.root,
-                    cache_dir=self.server.cache_dir,
-                    model_id=str(body.get("model", "seedance2")),
-                    ratio=str(body.get("ratio")) if body.get("ratio") else None,
-                    resolution=(str(body.get("resolution")) if body.get("resolution") else None),
-                    prompt=str(body.get("prompt", "")),
-                    prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
-                    prompt_template_version=int(str(body.get("template_version", 1))),
-                    consent_affirmed=True,
-                )
+                    with self.server.session_lock:
+                        self.server.sessions[session_id].update(
+                            stage="Grouping complete sections…",
+                            message="Balancing 4–10 second generation clips without moving a cut.",
+                        )
+                    prepared = prepare_phase_c_job(
+                        video,
+                        image,
+                        audio,
+                        predictions=detection.predictions_path,
+                        output_root=self.server.root,
+                        cache_dir=self.server.cache_dir,
+                        model_id=str(body.get("model", "seedance2")),
+                        ratio=str(body.get("ratio")) if body.get("ratio") else None,
+                        resolution=(
+                            str(body.get("resolution")) if body.get("resolution") else None
+                        ),
+                        prompt=str(body.get("prompt", "")),
+                        prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
+                        prompt_template_version=int(str(body.get("template_version", 1))),
+                        consent_affirmed=True,
+                    )
+                finally:
+                    self.server.analysis_lock.release()
                 auto_run = body.get("auto_run") is True
                 with self.server.session_lock:
                     self.server.sessions[session_id].update(
@@ -698,6 +716,7 @@ def create_pipeline_server(
     server.html = render_pipeline_html().encode()
     server.sessions = {}
     server.session_lock = threading.Lock()
+    server.analysis_lock = threading.Lock()
     server.active_jobs = set()
     server.active_lock = threading.Lock()
     return server

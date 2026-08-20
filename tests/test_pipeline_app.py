@@ -100,6 +100,23 @@ def test_phase_e_server_serves_ui_and_empty_job_index(tmp_path: Path) -> None:
         thread.join(timeout=5)
 
 
+def test_pipeline_server_serializes_memory_intensive_analysis(tmp_path: Path) -> None:
+    try:
+        server = create_pipeline_server(
+            PipelineStudioConfig(port=0),
+            output_root=tmp_path / "jobs",
+            cache_dir=tmp_path / "cache",
+        )
+    except PermissionError:
+        pytest.skip("sandbox does not permit binding a loopback socket")
+    try:
+        assert server.analysis_lock.acquire(blocking=False)
+        assert not server.analysis_lock.acquire(blocking=False)
+        server.analysis_lock.release()
+    finally:
+        server.server_close()
+
+
 def test_hosted_server_health_and_optional_password(tmp_path: Path) -> None:
     try:
         server = create_pipeline_server(

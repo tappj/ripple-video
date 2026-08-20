@@ -274,19 +274,31 @@ def background_delta(
     """Histogram/edge delta outside the subject and persistent animated regions."""
     frame_count, height, width = grayscale.shape
     source_width, source_height = source_size
-    temporal_variance = np.std(grayscale.astype(np.float32), axis=0)
+    # Compute temporal variance online. Casting the complete frame cube to
+    # float32 previously created a second full-video allocation.
+    temporal_mean = np.zeros((height, width), dtype=np.float64)
+    temporal_m2 = np.zeros((height, width), dtype=np.float64)
+    for index, frame in enumerate(grayscale, start=1):
+        values = frame.astype(np.float64)
+        delta = values - temporal_mean
+        temporal_mean += delta / index
+        temporal_m2 += delta * (values - temporal_mean)
+    temporal_variance = np.sqrt(temporal_m2 / max(1, frame_count))
     variance_limit = float(np.percentile(temporal_variance, config.background_variance_percentile))
     stable = temporal_variance <= variance_limit
     bottom_dynamic_fraction = float(np.mean(~stable[height // 2 :]))
     captions_masked = bottom_dynamic_fraction > 0.01
-    gradients = np.empty_like(grayscale, dtype=np.float32)
-    for index, frame in enumerate(grayscale):
-        gy, gx = np.gradient(frame.astype(np.float32))
-        gradients[index] = np.hypot(gx, gy)
     result = np.full(frame_count - 1, np.nan, dtype=np.float64)
+    previous_gradient: npt.NDArray[np.float32] | None = None
     for boundary in range(frame_count - 1):
+        if previous_gradient is None:
+            previous_gy, previous_gx = np.gradient(grayscale[boundary].astype(np.float32))
+            previous_gradient = np.hypot(previous_gx, previous_gy)
+        next_gy, next_gx = np.gradient(grayscale[boundary + 1].astype(np.float32))
+        next_gradient = np.hypot(next_gx, next_gy)
         union = np.nanmean(bboxes[boundary : boundary + 2], axis=0)
         if not np.isfinite(union).all():
+            previous_gradient = next_gradient
             continue
         box = np.asarray(union, dtype=np.float64)
         box[[0, 2]] *= width / source_width
@@ -300,6 +312,7 @@ def background_delta(
         mask = stable.copy()
         mask[top:, left:right] = False
         if np.count_nonzero(mask) < bins:
+            previous_gradient = next_gradient
             continue
         first = grayscale[boundary][mask]
         second = grayscale[boundary + 1][mask]
@@ -307,9 +320,10 @@ def background_delta(
         second_hist, _ = np.histogram(second, bins=bins, range=(0, 256), density=True)
         histogram_change = float(np.abs(first_hist - second_hist).sum())
         edge_change = float(
-            np.mean(np.abs(gradients[boundary][mask] - gradients[boundary + 1][mask])) / 255.0
+            np.mean(np.abs(previous_gradient[mask] - next_gradient[mask])) / 255.0
         )
         result[boundary] = histogram_change + edge_change
+        previous_gradient = next_gradient
     return result, captions_masked
 
 
@@ -582,33 +596,100 @@ def compute_signal_bundle(
         metadata = json.loads(str(archive["metadata"].item()))
         frame_times = np.asarray(archive["frame_times_sec"], dtype=np.float64)
         boundary_times = frame_times[1:]
+        frame_count = len(frame_times)
+        source_size = (int(metadata["source_width"]), int(metadata["source_height"]))
+
+        # Large compressed arrays are deliberately loaded and reduced one at a
+        # time. Keeping grayscale and float32 dense flow resident together was
+        # enough to exceed a 512 MiB hosted instance on ordinary clips.
+        if "flow_incoherence" in archive.files:
+            flow_score = np.asarray(archive["flow_incoherence"], dtype=np.float64)
+            flow_auxiliary = {
+                "flow_magnitude": np.asarray(archive["flow_magnitude"], dtype=np.float64),
+                "flow_inlier_ratio": np.asarray(
+                    archive["flow_inlier_ratio"], dtype=np.float64
+                ),
+            }
+        else:
+            flow = np.asarray(archive["dense_flow"], dtype=np.float16)
+            flow_score, flow_auxiliary = flow_incoherence(flow, settings)
+            del flow
+
+        histograms = np.asarray(archive["hsv_histograms"], dtype=np.float32)
+        histogram_bins = int(histograms.shape[1] // 3)
+        content, content_reason = content_value(feature_file.parent, histograms)
+        del histograms
+        if content_reason:
+            disabled["content_val"] = content_reason
+
         availability = np.asarray(archive["face_available"], dtype=np.bool_)
-        landmarks = np.asarray(archive["face_landmarks_px"], dtype=np.float32)
+        face_detection_rate = float(np.mean(availability)) if len(availability) else 0.0
+
         matrices = np.asarray(archive["facial_transformation_matrices"], dtype=np.float32)
-        blendshapes = np.asarray(archive["face_blendshapes"], dtype=np.float32)
-        names = [str(value) for value in archive["face_blendshape_names"].tolist()]
-        bboxes = np.asarray(archive["face_bbox_px"], dtype=np.float32)
+        pose_score = pose_accel(matrices, availability)
+        del matrices
+
         scales = np.asarray(archive["face_scale_px"], dtype=np.float32)
         centroids = np.asarray(archive["face_centroid_px"], dtype=np.float32)
-        grayscale = np.asarray(archive["grayscale"], dtype=np.uint8)
-        histograms = np.asarray(archive["hsv_histograms"], dtype=np.float32)
-        flow = np.asarray(archive["dense_flow"], dtype=np.float32)
+        centroid_score = centroid_accel(centroids, scales, availability)
+        scale_score = scale_delta(scales, availability)
+        del centroids, scales
+
+        landmarks = np.asarray(archive["face_landmarks_px"], dtype=np.float32)
+        procrustes_score = procrustes_residual(landmarks, availability)
+        if "stabilized_residual" in archive.files and "background_delta" in archive.files:
+            stabilized_score = np.asarray(archive["stabilized_residual"], dtype=np.float64)
+            background_score = np.asarray(archive["background_delta"], dtype=np.float64)
+            captions_masked = bool(archive["captions_region_masked"].item())
+            del landmarks
+        else:
+            bboxes = np.asarray(archive["face_bbox_px"], dtype=np.float32)
+            grayscale = np.asarray(archive["grayscale"], dtype=np.uint8)
+            stabilized_score = stabilized_residual(
+                grayscale, landmarks, bboxes, availability, source_size, settings
+            )
+            background_score, captions_masked = background_delta(
+                grayscale, bboxes, source_size, histogram_bins, settings
+            )
+            del grayscale, landmarks, bboxes
+
+        blendshapes = np.asarray(archive["face_blendshapes"], dtype=np.float32)
+        names = [str(value) for value in archive["face_blendshape_names"].tolist()]
+        blendshape_score = blendshape_delta(
+            blendshapes, names, availability, settings.blendshape_emphasis
+        )
+        del blendshapes
+
         audio_times = np.asarray(archive["audio_times_sec"], dtype=np.float64)
-        fine_flux = np.asarray(archive["audio_spectral_flux"], dtype=np.float32)
-        high_band = np.asarray(archive["audio_high_band_rms"], dtype=np.float32)
-        waveform = np.asarray(archive["audio_waveform"], dtype=np.float32)
         sample_rate = int(archive["audio_sample_rate"].item())
-        f0_hz = np.asarray(archive["audio_f0_hz"], dtype=np.float32)
-        mfcc = np.asarray(archive["audio_mfcc"], dtype=np.float32)
-    frame_count = len(frame_times)
-    source_size = (int(metadata["source_width"]), int(metadata["source_height"]))
-    flow_score, flow_auxiliary = flow_incoherence(flow, settings)
-    background_score, captions_masked = background_delta(
-        grayscale, bboxes, source_size, int(histograms.shape[1] // 3), settings
-    )
-    content, content_reason = content_value(feature_file.parent, histograms)
-    if content_reason:
-        disabled["content_val"] = content_reason
+        if sample_rate <= 0 or not len(audio_times):
+            audio_values = {name: _nan_boundaries(frame_count) for name in AUDIO_SIGNALS}
+            for name in AUDIO_SIGNALS:
+                disabled[name] = "audio unavailable"
+        else:
+            fine_flux = np.asarray(archive["audio_spectral_flux"], dtype=np.float32)
+            spectral_score = spectral_flux(fine_flux, audio_times, boundary_times, settings)
+            del fine_flux
+            high_band = np.asarray(archive["audio_high_band_rms"], dtype=np.float32)
+            noise_score = noise_floor_step(high_band, audio_times, boundary_times, settings)
+            del high_band
+            waveform = np.asarray(archive["audio_waveform"], dtype=np.float32)
+            lpc_score = lpc_residual_spike(waveform, sample_rate, boundary_times, settings)
+            del waveform
+            f0_hz = np.asarray(archive["audio_f0_hz"], dtype=np.float32)
+            f0_score = f0_discontinuity(f0_hz, audio_times, boundary_times, settings)
+            del f0_hz
+            mfcc = np.asarray(archive["audio_mfcc"], dtype=np.float32)
+            mfcc_score = mfcc_delta(mfcc, audio_times, boundary_times, settings)
+            del mfcc
+            audio_values = {
+                "spectral_flux": spectral_score,
+                "noise_floor_step": noise_score,
+                "lpc_residual_spike": lpc_score,
+                "f0_discontinuity": f0_score,
+                "mfcc_delta": mfcc_score,
+            }
+
     transnet, transnet_reason = transnet_probability(feature_file.parent, frame_count)
     if transnet_reason:
         disabled["transnet_prob"] = transnet_reason
@@ -620,31 +701,13 @@ def compute_signal_bundle(
         disabled["word_gap_anomaly"] = "word timestamps not provided"
     else:
         word_gap = word_gap_anomaly(words, boundary_times)
-    if sample_rate <= 0 or not len(audio_times):
-        audio_values = {name: _nan_boundaries(frame_count) for name in AUDIO_SIGNALS}
-        for name in AUDIO_SIGNALS:
-            disabled[name] = "audio unavailable"
-    else:
-        audio_values = {
-            "spectral_flux": spectral_flux(fine_flux, audio_times, boundary_times, settings),
-            "noise_floor_step": noise_floor_step(high_band, audio_times, boundary_times, settings),
-            "lpc_residual_spike": lpc_residual_spike(
-                waveform, sample_rate, boundary_times, settings
-            ),
-            "f0_discontinuity": f0_discontinuity(f0_hz, audio_times, boundary_times, settings),
-            "mfcc_delta": mfcc_delta(mfcc, audio_times, boundary_times, settings),
-        }
     raw = {
-        "pose_accel": pose_accel(matrices, availability),
-        "centroid_accel": centroid_accel(centroids, scales, availability),
-        "scale_delta": scale_delta(scales, availability),
-        "procrustes_residual": procrustes_residual(landmarks, availability),
-        "blendshape_delta": blendshape_delta(
-            blendshapes, names, availability, settings.blendshape_emphasis
-        ),
-        "stabilized_residual": stabilized_residual(
-            grayscale, landmarks, bboxes, availability, source_size, settings
-        ),
+        "pose_accel": pose_score,
+        "centroid_accel": centroid_score,
+        "scale_delta": scale_score,
+        "procrustes_residual": procrustes_score,
+        "blendshape_delta": blendshape_score,
+        "stabilized_residual": stabilized_score,
         "flow_incoherence": flow_score,
         "background_delta": background_score,
         "content_val": content,
@@ -661,5 +724,5 @@ def compute_signal_bundle(
         flow_auxiliary,
         disabled,
         captions_masked,
-        float(np.mean(availability)) if len(availability) else 0.0,
+        face_detection_rate,
     )
