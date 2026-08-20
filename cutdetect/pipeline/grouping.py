@@ -1,4 +1,4 @@
-"""Partition complete cut sections into 4-10 second generation clips."""
+"""Partition complete cut sections into model-safe generation clips."""
 
 from __future__ import annotations
 
@@ -153,11 +153,16 @@ def group_atomic_segments(
     model_id: str = "seedance2",
     target_sec: float | None = None,
     min_group_sec: float = 4.0,
-    max_group_sec: float = 10.0,
+    max_group_sec: float = 15.0,
     max_group_segments: int = 4,
     group_cost_bias: float = 4.0,
 ) -> GroupingPlan:
-    """DP-partition adjacent sections without moving or removing hard boundaries."""
+    """DP-partition adjacent sections without moving or removing hard boundaries.
+
+    Clips prefer the original 4-10 second and four-section policy. When that
+    cannot cover every complete section, the planner may extend a clip to the
+    model-safe maximum and absorb additional adjacent short sections.
+    """
     if model_id not in MODEL_CAPABILITIES:
         raise PipelineError(f"unsupported model: {model_id}")
     if not segments:
@@ -168,6 +173,11 @@ def group_atomic_segments(
         raise PipelineError("group_cost_bias must be non-negative")
     if min_group_sec <= 0 or max_group_sec < min_group_sec:
         raise PipelineError("group duration bounds must satisfy 0 < min <= max")
+    model_max_sec = MODEL_CAPABILITIES[model_id].max_duration_s
+    if max_group_sec > model_max_sec + 1e-6:
+        raise PipelineError(
+            f"max_group_sec cannot exceed the {model_max_sec:g}s {model_id} model maximum"
+        )
     duration_sec = segments[-1].end_sec - segments[0].start_sec
     selected_target = target_sec if target_sec is not None else automatic_target(duration_sec)
     if not min_group_sec <= selected_target <= max_group_sec:
@@ -177,42 +187,62 @@ def group_atomic_segments(
     for segment in segments:
         prefix.append(prefix[-1] + segment.duration_sec)
     count = len(segments)
-    infinity = float("inf")
-    best = [infinity] * (count + 1)
-    previous: list[int | None] = [None] * (count + 1)
-    best[0] = 0.0
-    for end in range(1, count + 1):
-        first = max(0, end - max_group_segments)
-        for start in range(first, end):
-            batch_duration = prefix[end] - prefix[start]
-            if batch_duration <= min_group_sec + 1e-6 or batch_duration > max_group_sec + 1e-6:
-                continue
-            cost = best[start] + (batch_duration - selected_target) ** 2 + group_cost_bias
-            if cost < best[end]:
-                best[end] = cost
-                previous[end] = start
 
-    ranges: list[tuple[int, int]] = []
-    cursor = count
-    while cursor:
-        predecessor = previous[cursor]
-        if predecessor is None:
-            oversized = tuple(
-                segment.index for segment in segments if segment.duration_sec > max_group_sec + 1e-6
-            )
-            if oversized:
-                raise PipelineError(
-                    f"source sections {oversized} exceed the {max_group_sec:g}s maximum; "
-                    "they cannot be split silently"
-                )
+    def solve(max_duration_sec: float, section_limit: int) -> list[tuple[int, int]] | None:
+        infinity = float("inf")
+        best = [infinity] * (count + 1)
+        previous: list[int | None] = [None] * (count + 1)
+        best[0] = 0.0
+        for end in range(1, count + 1):
+            first = max(0, end - section_limit)
+            for start in range(first, end):
+                batch_duration = prefix[end] - prefix[start]
+                if (
+                    batch_duration < min_group_sec - 1e-6
+                    or batch_duration > max_duration_sec + 1e-6
+                ):
+                    continue
+                cost = best[start] + (batch_duration - selected_target) ** 2 + group_cost_bias
+                if cost < best[end]:
+                    best[end] = cost
+                    previous[end] = start
+
+        if previous[count] is None:
+            return None
+        result: list[tuple[int, int]] = []
+        cursor = count
+        while cursor:
+            predecessor = previous[cursor]
+            if predecessor is None:  # pragma: no cover - guarded by the full-plan check
+                return None
+            result.append((predecessor, cursor))
+            cursor = predecessor
+        result.reverse()
+        return result
+
+    preferred_max_sec = min(max_group_sec, max(10.0, min_group_sec))
+    ranges = solve(preferred_max_sec, max_group_segments)
+    if ranges is None:
+        # A limit of one is an explicit no-merge mode. Otherwise, the section
+        # count is a preference: many tiny cuts may safely share one <=15s clip.
+        fallback_section_limit = 1 if max_group_segments == 1 else count
+        ranges = solve(max_group_sec, fallback_section_limit)
+    if ranges is None:
+        oversized = tuple(
+            segment.index for segment in segments if segment.duration_sec > max_group_sec + 1e-6
+        )
+        if oversized:
             raise PipelineError(
-                f"cannot partition these complete cut sections into clips longer than "
-                f"{min_group_sec:g}s and no longer than {max_group_sec:g}s with at most "
-                f"{max_group_segments} sections each"
+                f"source sections {oversized} exceed the {max_group_sec:g}s maximum; "
+                "they cannot be split silently"
             )
-        ranges.append((predecessor, cursor))
-        cursor = predecessor
-    ranges.reverse()
+        section_note = (
+            " in explicit no-merge mode" if max_group_segments == 1 else ""
+        )
+        raise PipelineError(
+            f"cannot partition these complete cut sections into clips at least "
+            f"{min_group_sec:g}s and no longer than {max_group_sec:g}s{section_note}"
+        )
 
     groups: list[SegmentGroup] = []
     for group_index, (start, end) in enumerate(ranges):
@@ -259,7 +289,7 @@ def plan_from_predictions(
     model_id: str = "seedance2",
     target_sec: float | None = None,
     min_group_sec: float = 4.0,
-    max_group_sec: float = 10.0,
+    max_group_sec: float = 15.0,
     max_group_segments: int = 4,
     group_cost_bias: float = 4.0,
 ) -> GroupingPlan:

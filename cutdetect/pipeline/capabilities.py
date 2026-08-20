@@ -60,8 +60,8 @@ ROUTER_RESOLUTIONS: dict[str, tuple[str, ...]] = {
 }
 
 # CHECKPOINT A found that Seedance retained only one of two known hard cuts.
-# The capability remains False as an honest QC signal. The user-directed 4-10 second
-# grouping policy accepts that risk and retains every hard boundary in the source media.
+# The capability remains False as an honest QC signal. The grouping policy prefers
+# 4-10 seconds, extending to 15 seconds only when needed to absorb short sections.
 MODEL_CAPABILITIES: dict[str, ModelCaps] = {
     "seedance2": ModelCaps(
         model_id="seedance2",

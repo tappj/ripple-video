@@ -557,7 +557,10 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     with self.server.session_lock:
                         self.server.sessions[session_id].update(
                             stage="Grouping complete sections…",
-                            message="Balancing 4–10 second generation clips without moving a cut.",
+                            message=(
+                                "Balancing 4–10 second clips; short cuts may merge up to 15 "
+                                "seconds without moving a boundary."
+                            ),
                         )
                     prepared = prepare_phase_c_job(
                         video,

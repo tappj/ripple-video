@@ -74,11 +74,13 @@ Plan boundary-preserving generation batches with:
   --predictions eval/phase3/predictions.json --max-group-segments 4
 ```
 
-Each generated clip contains one to four **complete adjacent** cut sections and must be
-longer than 4 seconds and no longer than 10 seconds. Internal hard cuts remain in the source media sent to the
-workflow: the planner never trims inside a section, removes a boundary, or adds a
-transition. Set `--max-group-segments 1` for no grouping when every individual section
-already satisfies the duration bounds.
+Each generated clip contains **complete adjacent** cut sections and is at least 4 seconds.
+The planner prefers clips no longer than 10 seconds and one to four source sections. If
+that cannot absorb a short section, it may merge additional adjacent sections into a clip
+up to the model-safe 15-second ceiling. Internal hard cuts remain in the source media sent
+to the workflow: the planner never trims inside a section, removes a boundary, or adds a
+transition. Set `--max-group-segments 1` for explicit no-grouping mode when every
+individual section already satisfies the duration bounds.
 
 ## Durable parallel generation
 

@@ -400,7 +400,7 @@ class PhaseCStore:
             requested_duration = (
                 WORKFLOW_DURATION_SEC
                 if route_id == TALKING_WORKFLOW_ROUTE
-                else math.ceil(group.duration_sec)
+                else math.ceil(group.duration_sec - 1e-6)
             )
             if not caps.min_duration_s <= requested_duration <= caps.max_duration_s:
                 raise PipelineError(
@@ -1242,7 +1242,7 @@ def prepare_phase_c_job(
     cache_dir: str | Path | None = ".cutdetect/cache",
     target_sec: float | None = None,
     min_group_sec: float = 4.0,
-    max_group_sec: float = 10.0,
+    max_group_sec: float = 15.0,
     max_group_segments: int = 4,
     model_id: str = "seedance2",
     ratio: str | None = None,

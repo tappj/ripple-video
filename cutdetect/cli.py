@@ -150,13 +150,18 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--model", choices=("seedance2", "hailuo3"), default="seedance2")
     plan.add_argument("--target", type=float, help="generation clip duration target in seconds")
     plan.add_argument("--min-group-sec", type=float, default=4.0)
-    plan.add_argument("--max-group-sec", type=float, default=10.0)
+    plan.add_argument(
+        "--max-group-sec",
+        type=float,
+        default=15.0,
+        help="hard model-safe ceiling; clips remain at or below 10s when possible",
+    )
     plan.add_argument(
         "--max-group-segments",
         type=int,
         choices=(1, 2, 3, 4),
         default=4,
-        help="complete cut sections per generation clip; 1 disables grouping",
+        help="preferred complete sections per clip; 1 explicitly disables grouping",
     )
     plan.add_argument("--output", type=Path, help="also save the JSON plan here")
 
@@ -180,7 +185,12 @@ def _parser() -> argparse.ArgumentParser:
     prepare_job.add_argument("--cache-dir", type=Path, default=Path(".cutdetect/cache"))
     prepare_job.add_argument("--target", type=float)
     prepare_job.add_argument("--min-group-sec", type=float, default=4.0)
-    prepare_job.add_argument("--max-group-sec", type=float, default=10.0)
+    prepare_job.add_argument(
+        "--max-group-sec",
+        type=float,
+        default=15.0,
+        help="hard model-safe ceiling; clips remain at or below 10s when possible",
+    )
     prepare_job.add_argument("--max-group-segments", type=int, choices=(1, 2, 3, 4), default=4)
     prepare_job.add_argument("--model", choices=("seedance2", "hailuo3"), default="seedance2")
     prepare_job.add_argument("--ratio", help="routed output aspect ratio; defaults to 9:16")

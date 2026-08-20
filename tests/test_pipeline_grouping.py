@@ -69,11 +69,42 @@ def test_group_limit_cannot_exceed_four(tmp_path: Path) -> None:
         group_atomic_segments(segments, max_group_segments=5)
 
 
-def test_exactly_four_seconds_does_not_satisfy_strict_minimum(tmp_path: Path) -> None:
+def test_exactly_four_seconds_satisfies_inclusive_minimum(tmp_path: Path) -> None:
     segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [4.0]))
 
-    with pytest.raises(PipelineError, match="longer than 4s"):
-        group_atomic_segments(segments, target_sec=6.0, max_group_segments=1)
+    plan = group_atomic_segments(segments, target_sec=6.0, max_group_segments=1)
+
+    assert [group.duration_sec for group in plan.groups] == [4.0]
+
+
+def test_short_section_can_extend_adjacent_clip_to_fifteen_second_ceiling(
+    tmp_path: Path,
+) -> None:
+    segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [8.0, 3.0]))
+
+    plan = group_atomic_segments(segments, target_sec=6.0)
+
+    assert [group.segment_indices for group in plan.groups] == [(0, 1)]
+    assert plan.groups[0].duration_sec == pytest.approx(11.0)
+    assert plan.max_group_sec == 15.0
+
+
+def test_short_cut_heavy_video_can_relax_four_section_preference(tmp_path: Path) -> None:
+    segments = load_atomic_segments(
+        _write_predictions(tmp_path / "predictions.json", [0.9, 0.9, 0.9, 0.9, 7.4])
+    )
+
+    plan = group_atomic_segments(segments, target_sec=6.0, max_group_segments=4)
+
+    assert [group.segment_indices for group in plan.groups] == [(0, 1, 2, 3, 4)]
+    assert plan.groups[0].duration_sec == pytest.approx(11.0)
+
+
+def test_clip_longer_than_model_ceiling_is_rejected(tmp_path: Path) -> None:
+    segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [15.1]))
+
+    with pytest.raises(PipelineError, match="exceed the 15s maximum"):
+        group_atomic_segments(segments)
 
 
 def test_sample_partition_is_six_generation_clips_between_four_and_ten(
