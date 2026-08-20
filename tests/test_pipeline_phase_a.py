@@ -18,6 +18,7 @@ from cutdetect.pipeline.runway_client import (
     RunwayTaskError,
     model_router_route,
     public_failure_code,
+    public_failure_message,
     seedance_ratio,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
@@ -208,6 +209,10 @@ def test_safety_provider_diagnostic_is_not_user_visible() -> None:
         public_failure_code("INPUT_PREPROCESSING.SAFETY.THIRD_PARTY")
         == "INPUT_PREPROCESSING.SAFETY"
     )
+    message = public_failure_message("INPUT_PREPROCESSING.SAFETY.THIRD_PARTY")
+    assert "INPUT_PREPROCESSING.SAFETY" in message
+    assert "Do not retry it unchanged" in message
+    assert "THIRD_PARTY" not in message
 
 
 def test_capability_probe_ceiling_is_sum_of_five_minimal_tests() -> None:

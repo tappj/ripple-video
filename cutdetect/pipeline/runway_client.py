@@ -95,6 +95,25 @@ def public_failure_code(failure_code: str | None) -> str:
     return failure_code
 
 
+def public_failure_message(failure_code: str | None) -> str:
+    """Explain a public Runway failure code without exposing provider diagnostics."""
+    code = public_failure_code(failure_code)
+    if code.startswith("SAFETY.") or ".SAFETY" in code:
+        return (
+            f"Runway's model provider blocked this clip during content moderation ({code}). "
+            "Do not retry it unchanged."
+        )
+    if code.startswith("ASSET.INVALID"):
+        return f"Runway could not accept one of this clip's media inputs ({code})."
+    if code.startswith("INTERNAL.BAD_OUTPUT"):
+        return f"Runway rejected the generated result during quality checks ({code})."
+    if code.startswith("THIRD_PARTY.UNAVAILABLE"):
+        return f"The selected model provider is temporarily unavailable ({code})."
+    if code == "unknown" or code.startswith("INTERNAL"):
+        return f"Runway encountered an internal generation problem ({code})."
+    return f"Runway generation failed ({code})."
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationRequest:
     """Validated Seedance multi-reference request independent of SDK naming conventions."""
@@ -462,7 +481,7 @@ class RunwayClient:
             return GenerationPoll(
                 "FAILED",
                 failure_code=public_failure_code(state.failure_code),
-                failure_message="generation failed; see the structured Runway log",
+                failure_message=public_failure_message(state.failure_code),
             )
         if isinstance(state, Succeeded):
             return GenerationPoll("SUCCEEDED", output_urls=tuple(state.output))

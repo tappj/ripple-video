@@ -55,6 +55,9 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "No generations on this device yet." in html
     assert "Generation failed." in html
     assert "Retry clip" in html
+    assert "Retry unavailable" in html
+    assert "nonRetryableFailure" in html
+    assert "Provider blocked this clip." in html
     assert "playback-failed" in html
     assert "events?device=" in html
 
