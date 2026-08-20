@@ -89,6 +89,14 @@ def _boot_payload() -> dict[str, object]:
     }
 
 
+def _health_payload() -> dict[str, str]:
+    payload = {"status": "ok"}
+    commit = os.environ.get("RENDER_GIT_COMMIT", "").strip()
+    if commit:
+        payload["commit"] = commit
+    return payload
+
+
 def render_pipeline_html() -> str:
     """Render the Ripple input/output workspace."""
     return render_ripple_html(_boot_payload())
@@ -367,7 +375,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         route = unquote(parsed.path)
         try:
             if route == "/healthz":
-                self._json({"status": "ok"})
+                self._json(_health_payload())
                 return
             if self._require_authorization():
                 return

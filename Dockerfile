@@ -13,6 +13,7 @@ RUN apt-get update \
       ca-certificates \
       curl \
       ffmpeg \
+      libegl1 \
       libgl1 \
       libgles2 \
       libglib2.0-0 \
@@ -21,13 +22,14 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY cutdetect ./cutdetect
+COPY scripts/container_feature_smoke.py ./scripts/container_feature_smoke.py
 
 RUN python -m pip install --no-cache-dir ".[features]" \
-    && python -c "import cv2, mediapipe" \
     && mkdir -p /app/.cutdetect/models \
     && curl -fsSL \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task \
       -o /app/.cutdetect/models/face_landmarker.task \
+    && python scripts/container_feature_smoke.py /app/.cutdetect/models/face_landmarker.task \
     && addgroup --system ripple \
     && adduser --system --ingroup ripple ripple \
     && mkdir -p /data/ripple /data/cache \

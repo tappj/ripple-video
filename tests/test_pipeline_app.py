@@ -11,6 +11,7 @@ import pytest
 
 from cutdetect.pipeline.app import (
     PipelineStudioConfig,
+    _health_payload,
     create_pipeline_server,
     render_pipeline_html,
 )
@@ -48,6 +49,12 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Original reference" not in html
     assert "Source vs clone QC" not in html
     assert "RUNWAYML_API_SECRET" not in html
+
+
+def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abc123")
+
+    assert _health_payload() == {"status": "ok", "commit": "abc123"}
 
 
 def test_ripple_review_only_polls_live_states() -> None:
