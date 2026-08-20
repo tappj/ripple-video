@@ -19,13 +19,12 @@ class PromptTemplate:
 UGC_CLONE_V1 = PromptTemplate(
     id="ugc_clone_v1",
     label="UGC Clone",
-    version=2,
+    version=3,
     body=(
-        "Use Video 1 as the reference video. Preserve the original video's camera angle, "
-        "framing, background, timing, body movements, gestures, facial expressions, and "
-        "pacing. Replace the person in Video 1 with the person from Image 1. Use Audio 1 "
-        "only as the voice reference; keep the exact spoken words, timing, and pacing from "
-        "Video 1."
+        "Clone Video 1 exactly at the same length. Keep its framing, camera, background, "
+        "motion, timing, cuts, dialogue, and background audio unchanged. Replace only the "
+        "person's face with Image 1. If Audio 1 is provided, replace only the speaking voice "
+        "with Audio 1 while preserving the exact words and timing. Change nothing else."
     ),
     editable_by_user=True,
 )
