@@ -138,7 +138,7 @@ class GenerationRequest:
         return payload
 
     def router_payload(self) -> RouterVideoInput:
-        """Return the model-agnostic payload for ``/v1/generate/video``."""
+        """Return the SDK-shaped model-agnostic router payload."""
         if self.ratio not in ROUTER_ASPECT_RATIOS:
             raise RouterConfigurationError(f"unsupported routed aspect ratio: {self.ratio}")
         if self.resolution is None:
@@ -160,6 +160,18 @@ class GenerationRequest:
         if self.reference_audio is not None:
             payload["reference_audio"] = [{"uri": self.reference_audio}]
         return cast(RouterVideoInput, payload)
+
+    def router_http_payload(self) -> dict[str, object]:
+        """Return the camel-case JSON aliases required by a raw HTTP dry-run."""
+        sdk_payload = self.router_payload()
+        aliases = {
+            "prompt_text": "promptText",
+            "aspect_ratio": "aspectRatio",
+            "reference_images": "referenceImages",
+            "reference_videos": "referenceVideos",
+            "reference_audio": "referenceAudio",
+        }
+        return {aliases.get(key, key): value for key, value in sdk_payload.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,12 +367,13 @@ class RunwayClient:
     def submit_router(self, config_id: str, request: GenerationRequest) -> str:
         """Dry-run, verify, and create one independent routed video task."""
         payload = request.router_payload()
+        http_payload = request.router_http_payload()
         started = time.monotonic()
         try:
             preview = self._client.post(
                 "/v1/generate/video",
                 cast_to=VideoCreateResponse,
-                body={"configId": config_id, "dryRun": True, "input": payload},
+                body={"configId": config_id, "dryRun": True, "input": http_payload},
             )
         except Exception as error:
             self._logger.write(

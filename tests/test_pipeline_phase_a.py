@@ -105,6 +105,16 @@ def test_model_router_payload_is_model_agnostic_and_keeps_all_references() -> No
         "reference_videos": [{"uri": "runway://video", "role": "source"}],
         "reference_audio": [{"uri": "runway://audio"}],
     }
+    assert request.router_http_payload() == {
+        "promptText": UGC_CLONE_V1.body,
+        "aspectRatio": "9:16",
+        "resolution": "720p",
+        "duration": 6,
+        "audio": True,
+        "referenceImages": [{"uri": "runway://image", "role": "reference"}],
+        "referenceVideos": [{"uri": "runway://video", "role": "source"}],
+        "referenceAudio": [{"uri": "runway://audio"}],
+    }
     assert model_router_route("seedance2") == (
         "router:" + DEFAULT_MODEL_ROUTER_CONFIG_IDS["seedance2"]
     )
@@ -176,6 +186,8 @@ def test_router_gateway_validates_dry_runs_then_starts_a_fresh_task(
     assert isinstance(dry_run, dict)
     assert dry_run["body"]["dryRun"] is True
     assert dry_run["body"]["configId"] == config_id
+    assert dry_run["body"]["input"] == request.router_http_payload()
+    assert calls[2][1]["input"] == request.router_payload()
 
 
 def test_local_storage_rejects_escape(tmp_path: Path) -> None:
