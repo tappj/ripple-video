@@ -559,7 +559,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                             stage="Grouping complete sections…",
                             message=(
                                 "Balancing 4–10 second clips; short cuts may merge up to 15 "
-                                "seconds without moving a boundary."
+                                "seconds and long shots split at audio pauses."
                             ),
                         )
                     prepared = prepare_phase_c_job(

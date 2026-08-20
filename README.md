@@ -82,6 +82,14 @@ to the workflow: the planner never trims inside a section, removes a boundary, o
 transition. Set `--max-group-segments 1` for explicit no-grouping mode when every
 individual section already satisfies the duration bounds.
 
+An uninterrupted visual section over 15 seconds is subdivided near 10-second intervals.
+The splitter chooses a detected silence first, then the lowest-energy nearby audio moment.
+Only media with no decodable source audio uses the balanced time point as a last-resort
+fallback. Short sections are merged with adjacent sections whenever the combined clip fits
+within 15 seconds. If a sub-4-second remainder is mathematically impossible to merge, the
+generation request is padded to the model minimum and the result is trimmed back to the
+exact source duration.
+
 ## Durable parallel generation
 
 Prepare a Phase C job locally before spending credits:

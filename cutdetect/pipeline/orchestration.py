@@ -400,7 +400,10 @@ class PhaseCStore:
             requested_duration = (
                 WORKFLOW_DURATION_SEC
                 if route_id == TALKING_WORKFLOW_ROUTE
-                else math.ceil(group.duration_sec - 1e-6)
+                else max(
+                    math.ceil(caps.min_duration_s),
+                    math.ceil(group.duration_sec - 1e-6),
+                )
             )
             if not caps.min_duration_s <= requested_duration <= caps.max_duration_s:
                 raise PipelineError(
@@ -1137,7 +1140,21 @@ class PhaseCWorker:
                     provider_path, segment.input_path, provider_path.with_name(output_key.name)
                 )
             else:
-                output_path = self.gateway.download(result.output_urls[0], segment.output_key)
+                if segment.requested_duration_sec > segment.duration_sec + 1e-6:
+                    output_key = Path(segment.output_key)
+                    provider_key = str(
+                        output_key.with_name(f"{output_key.stem}_provider.mp4")
+                    )
+                    provider_path = self.gateway.download(result.output_urls[0], provider_key)
+                    output_path = trim_generated_duration(
+                        provider_path,
+                        segment.duration_sec,
+                        provider_path.with_name(output_key.name),
+                    )
+                else:
+                    output_path = self.gateway.download(
+                        result.output_urls[0], segment.output_key
+                    )
         except Exception as error:
             self.store.record_event(
                 segment.job_id,
@@ -1277,6 +1294,7 @@ def prepare_phase_c_job(
         min_group_sec=min_group_sec,
         max_group_sec=max_group_sec,
         max_group_segments=max_group_segments,
+        source_video=source,
     )
     job_id = uuid.uuid4().hex
     storage = LocalDiskStorage(output_root)

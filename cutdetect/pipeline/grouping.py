@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -14,7 +16,7 @@ from cutdetect.pipeline.runway_client import PipelineError
 
 @dataclass(frozen=True, slots=True)
 class AtomicSegment:
-    """One indivisible source range bounded by detected hard cuts."""
+    """One source range bounded by a visual cut or an inserted audio pause."""
 
     index: int
     start_frame: int
@@ -22,6 +24,7 @@ class AtomicSegment:
     start_sec: float
     end_sec: float
     duration_sec: float
+    end_boundary_kind: str = "visual_cut"
 
     def to_dict(self) -> dict[str, object]:
         return cast(dict[str, object], asdict(self))
@@ -147,6 +150,95 @@ def load_atomic_segments(predictions: str | Path) -> tuple[AtomicSegment, ...]:
     return segments
 
 
+SplitPointSelector = Callable[[float, float, float], tuple[float, str]]
+
+
+def _split_long_segments(
+    segments: tuple[AtomicSegment, ...],
+    *,
+    min_group_sec: float,
+    max_group_sec: float,
+    preferred_group_sec: float,
+    split_selector: SplitPointSelector | None,
+) -> tuple[AtomicSegment, ...]:
+    """Subdivide visual sections over the model limit at audio-friendly points."""
+    result: list[AtomicSegment] = []
+    for segment in segments:
+        if segment.duration_sec <= max_group_sec + 1e-6:
+            result.append(segment)
+            continue
+        piece_count = max(2, math.ceil(segment.duration_sec / preferred_group_sec))
+        ideal_piece_sec = segment.duration_sec / piece_count
+        boundaries: list[tuple[int, float, str]] = []
+        previous_sec = segment.start_sec
+        for piece_index in range(1, piece_count):
+            remaining_pieces = piece_count - piece_index
+            ideal_sec = segment.start_sec + ideal_piece_sec * piece_index
+            lower_sec = max(
+                previous_sec + min_group_sec,
+                segment.end_sec - remaining_pieces * max_group_sec,
+            )
+            upper_sec = min(
+                previous_sec + max_group_sec,
+                segment.end_sec - remaining_pieces * min_group_sec,
+            )
+            selected_sec, boundary_kind = (
+                split_selector(ideal_sec, lower_sec, upper_sec)
+                if split_selector is not None
+                else (ideal_sec, "timed_fallback")
+            )
+            selected_sec = min(max(selected_sec, lower_sec), upper_sec)
+            frame_span = segment.end_frame - segment.start_frame
+            time_fraction = (selected_sec - segment.start_sec) / segment.duration_sec
+            selected_frame = round(segment.start_frame + time_fraction * frame_span)
+            minimum_frame = math.ceil(
+                segment.start_frame
+                + (lower_sec - segment.start_sec) / segment.duration_sec * frame_span
+            )
+            maximum_frame = math.floor(
+                segment.start_frame
+                + (upper_sec - segment.start_sec) / segment.duration_sec * frame_span
+            )
+            selected_frame = min(max(selected_frame, minimum_frame), maximum_frame)
+            if selected_frame <= segment.start_frame or selected_frame >= segment.end_frame:
+                raise PipelineError("source timing metadata cannot represent a safe audio split")
+            selected_sec = segment.start_sec + (
+                (selected_frame - segment.start_frame) / frame_span * segment.duration_sec
+            )
+            boundaries.append((selected_frame, selected_sec, boundary_kind))
+            previous_sec = selected_sec
+
+        starts = [(segment.start_frame, segment.start_sec, "")]
+        ends = [*boundaries, (segment.end_frame, segment.end_sec, segment.end_boundary_kind)]
+        for (start_frame, start_sec, _kind), (end_frame, end_sec, kind) in zip(
+            starts + boundaries, ends, strict=True
+        ):
+            result.append(
+                AtomicSegment(
+                    index=len(result),
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                    duration_sec=end_sec - start_sec,
+                    end_boundary_kind=kind,
+                )
+            )
+
+    return tuple(
+        AtomicSegment(
+            index=index,
+            start_frame=segment.start_frame,
+            end_frame=segment.end_frame,
+            start_sec=segment.start_sec,
+            end_sec=segment.end_sec,
+            duration_sec=segment.duration_sec,
+            end_boundary_kind=segment.end_boundary_kind,
+        )
+        for index, segment in enumerate(result)
+    )
+
+
 def group_atomic_segments(
     segments: tuple[AtomicSegment, ...],
     *,
@@ -156,12 +248,14 @@ def group_atomic_segments(
     max_group_sec: float = 15.0,
     max_group_segments: int = 4,
     group_cost_bias: float = 4.0,
+    split_selector: SplitPointSelector | None = None,
 ) -> GroupingPlan:
     """DP-partition adjacent sections without moving or removing hard boundaries.
 
     Clips prefer the original 4-10 second and four-section policy. When that
     cannot cover every complete section, the planner may extend a clip to the
-    model-safe maximum and absorb additional adjacent short sections.
+    model-safe maximum and absorb additional adjacent short sections. Visual
+    sections beyond that maximum are divided at audio-selected pause points.
     """
     if model_id not in MODEL_CAPABILITIES:
         raise PipelineError(f"unsupported model: {model_id}")
@@ -178,6 +272,14 @@ def group_atomic_segments(
         raise PipelineError(
             f"max_group_sec cannot exceed the {model_max_sec:g}s {model_id} model maximum"
         )
+    preferred_max_sec = min(max_group_sec, max(10.0, min_group_sec))
+    segments = _split_long_segments(
+        segments,
+        min_group_sec=min_group_sec,
+        max_group_sec=max_group_sec,
+        preferred_group_sec=preferred_max_sec,
+        split_selector=split_selector,
+    )
     duration_sec = segments[-1].end_sec - segments[0].start_sec
     selected_target = target_sec if target_sec is not None else automatic_target(duration_sec)
     if not min_group_sec <= selected_target <= max_group_sec:
@@ -188,7 +290,9 @@ def group_atomic_segments(
         prefix.append(prefix[-1] + segment.duration_sec)
     count = len(segments)
 
-    def solve(max_duration_sec: float, section_limit: int) -> list[tuple[int, int]] | None:
+    def solve(
+        minimum_duration_sec: float, max_duration_sec: float, section_limit: int
+    ) -> list[tuple[int, int]] | None:
         infinity = float("inf")
         best = [infinity] * (count + 1)
         previous: list[int | None] = [None] * (count + 1)
@@ -198,7 +302,7 @@ def group_atomic_segments(
             for start in range(first, end):
                 batch_duration = prefix[end] - prefix[start]
                 if (
-                    batch_duration < min_group_sec - 1e-6
+                    batch_duration < minimum_duration_sec - 1e-6
                     or batch_duration > max_duration_sec + 1e-6
                 ):
                     continue
@@ -220,34 +324,29 @@ def group_atomic_segments(
         result.reverse()
         return result
 
-    preferred_max_sec = min(max_group_sec, max(10.0, min_group_sec))
-    ranges = solve(preferred_max_sec, max_group_segments)
+    ranges = solve(min_group_sec, preferred_max_sec, max_group_segments)
     if ranges is None:
         # A limit of one is an explicit no-merge mode. Otherwise, the section
         # count is a preference: many tiny cuts may safely share one <=15s clip.
         fallback_section_limit = 1 if max_group_segments == 1 else count
-        ranges = solve(max_group_sec, fallback_section_limit)
+        ranges = solve(min_group_sec, max_group_sec, fallback_section_limit)
     if ranges is None:
-        oversized = tuple(
-            segment.index for segment in segments if segment.duration_sec > max_group_sec + 1e-6
-        )
-        if oversized:
-            raise PipelineError(
-                f"source sections {oversized} exceed the {max_group_sec:g}s maximum; "
-                "they cannot be split silently"
-            )
-        section_note = (
-            " in explicit no-merge mode" if max_group_segments == 1 else ""
-        )
+        # A source shorter than the model minimum, or a short section trapped
+        # beside a full-length section, is padded at request time and trimmed
+        # back to its exact source duration after generation.
+        ranges = solve(0.0, max_group_sec, count)
+    if ranges is None:
         raise PipelineError(
-            f"cannot partition these complete cut sections into clips at least "
-            f"{min_group_sec:g}s and no longer than {max_group_sec:g}s{section_note}"
+            "source timing metadata cannot be partitioned into positive model-safe clips"
         )
 
     groups: list[SegmentGroup] = []
     for group_index, (start, end) in enumerate(ranges):
         members = segments[start:end]
-        hard_cut_times = tuple(segment.end_sec for segment in members[:-1])
+        visual_boundaries = tuple(
+            segment for segment in members[:-1] if segment.end_boundary_kind == "visual_cut"
+        )
+        hard_cut_times = tuple(segment.end_sec for segment in visual_boundaries)
         groups.append(
             SegmentGroup(
                 index=group_index,
@@ -257,7 +356,7 @@ def group_atomic_segments(
                 start_sec=members[0].start_sec,
                 end_sec=members[-1].end_sec,
                 duration_sec=members[-1].end_sec - members[0].start_sec,
-                hard_cut_frames=tuple(segment.end_frame for segment in members[:-1]),
+                hard_cut_frames=tuple(segment.end_frame for segment in visual_boundaries),
                 hard_cut_times_sec=hard_cut_times,
                 hard_cut_offsets_sec=tuple(
                     cut_time - members[0].start_sec for cut_time in hard_cut_times
@@ -292,14 +391,24 @@ def plan_from_predictions(
     max_group_sec: float = 15.0,
     max_group_segments: int = 4,
     group_cost_bias: float = 4.0,
+    source_video: str | Path | None = None,
 ) -> GroupingPlan:
     """Build a boundary-preserving grouping directly from prediction JSON."""
+    segments = load_atomic_segments(predictions)
+    split_selector = None
+    if source_video is not None and any(
+        segment.duration_sec > max_group_sec + 1e-6 for segment in segments
+    ):
+        from cutdetect.pipeline.audio_pauses import load_audio_pause_selector
+
+        split_selector = load_audio_pause_selector(source_video)
     return group_atomic_segments(
-        load_atomic_segments(predictions),
+        segments,
         model_id=model_id,
         target_sec=target_sec,
         min_group_sec=min_group_sec,
         max_group_sec=max_group_sec,
         max_group_segments=max_group_segments,
         group_cost_bias=group_cost_bias,
+        split_selector=split_selector,
     )

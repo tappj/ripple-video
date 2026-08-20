@@ -627,6 +627,7 @@ def _pipeline(args: argparse.Namespace) -> int:
             min_group_sec=args.min_group_sec,
             max_group_sec=args.max_group_sec,
             max_group_segments=args.max_group_segments,
+            source_video=args.video,
         )
         payload = grouping.to_dict()
         if args.output is not None:

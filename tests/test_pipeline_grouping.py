@@ -100,11 +100,30 @@ def test_short_cut_heavy_video_can_relax_four_section_preference(tmp_path: Path)
     assert plan.groups[0].duration_sec == pytest.approx(11.0)
 
 
-def test_clip_longer_than_model_ceiling_is_rejected(tmp_path: Path) -> None:
-    segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [15.1]))
+def test_visual_section_longer_than_model_ceiling_is_split_at_audio_pause(
+    tmp_path: Path,
+) -> None:
+    segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [20.0]))
+    selections: list[tuple[float, float, float]] = []
 
-    with pytest.raises(PipelineError, match="exceed the 15s maximum"):
-        group_atomic_segments(segments)
+    def select(ideal: float, lower: float, upper: float) -> tuple[float, str]:
+        selections.append((ideal, lower, upper))
+        return 9.5, "audio_silence"
+
+    plan = group_atomic_segments(segments, split_selector=select)
+
+    assert selections
+    assert [group.duration_sec for group in plan.groups] == pytest.approx([9.5, 10.5])
+    assert plan.segments[0].end_boundary_kind == "audio_silence"
+    assert all(not group.hard_cut_frames for group in plan.groups)
+
+
+def test_unmergeable_short_section_is_never_rejected_for_duration(tmp_path: Path) -> None:
+    segments = load_atomic_segments(_write_predictions(tmp_path / "predictions.json", [1.0, 15.0]))
+
+    plan = group_atomic_segments(segments)
+
+    assert [group.duration_sec for group in plan.groups] == pytest.approx([1.0, 15.0])
 
 
 def test_sample_partition_is_six_generation_clips_between_four_and_ten(
