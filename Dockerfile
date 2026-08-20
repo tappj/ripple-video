@@ -6,7 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=10000 \
     RIPPLE_DATA_DIR=/data/ripple \
     RIPPLE_CACHE_DIR=/data/cache \
-    RIPPLE_MAX_UPLOAD_MIB=256
+    RIPPLE_MAX_UPLOAD_MIB=256 \
+    EGL_PLATFORM=surfaceless \
+    LIBGL_ALWAYS_SOFTWARE=true
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -15,6 +17,7 @@ RUN apt-get update \
       ffmpeg \
       libegl1 \
       libgl1 \
+      libgl1-mesa-dri \
       libgles2 \
       libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
