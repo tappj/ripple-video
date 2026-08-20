@@ -191,6 +191,10 @@ def _qc_artifact(
             "-y",
             "-v",
             "error",
+            "-filter_threads",
+            "1",
+            "-filter_complex_threads",
+            "1",
             "-i",
             str(source),
             "-i",
@@ -202,6 +206,8 @@ def _qc_artifact(
             "-an",
             "-c:v",
             "libx264",
+            "-threads",
+            "1",
             "-preset",
             "veryfast",
             "-crf",
@@ -279,7 +285,16 @@ def stitch_job(
         )
         concat_inputs.append(f"[v{index}][a{index}]")
     filters.append(f"{''.join(concat_inputs)}concat=n={len(clip_paths)}:v=1:a=1[video][audio]")
-    command = [_binary("ffmpeg"), "-y", "-v", "error"]
+    command = [
+        _binary("ffmpeg"),
+        "-y",
+        "-v",
+        "error",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+    ]
     for path in clip_paths:
         command.extend(["-i", str(path)])
     command.extend(
@@ -292,6 +307,8 @@ def stitch_job(
             "[audio]",
             "-c:v",
             "libx264",
+            "-threads",
+            "1",
             "-preset",
             "medium",
             "-crf",

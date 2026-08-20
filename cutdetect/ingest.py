@@ -314,6 +314,8 @@ def _normalize_to_cfr(source: Path, destination: Path, fps: Fraction, config: In
             "cfr",
             "-c:v",
             "libx264",
+            "-threads",
+            "1",
             "-preset",
             config.normalization_preset,
             "-crf",
@@ -356,7 +358,7 @@ def decode_frame_timestamps(path: str | Path) -> tuple[float, ...]:
         if not container.streams.video:
             raise IngestError(f"no video stream found: {path}")
         stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
+        stream.thread_count = 1
         for frame in container.decode(stream):
             if frame.pts is None or frame.time_base is None:
                 if stream.average_rate is None:
@@ -372,7 +374,7 @@ def iter_rgb_frames(context: VideoContext) -> Iterator[tuple[int, float, npt.NDA
     working_rotation = 0 if context.was_vfr else context.source_rotation_deg
     with av.open(str(context.working_video_path)) as container:
         stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
+        stream.thread_count = 1
         for index, frame in enumerate(container.decode(stream)):
             image = cast(npt.NDArray[np.uint8], frame.to_ndarray(format="rgb24"))
             if working_rotation:

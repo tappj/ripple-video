@@ -189,6 +189,8 @@ class ExportConfig:
     audio_codec: str = "aac"
     audio_bitrate: str = "192k"
     filename_digits: int = 2
+    ffmpeg_threads: int = 1
+    ffmpeg_timeout_sec: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)

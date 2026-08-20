@@ -114,6 +114,7 @@ def _trailing_low_motion_start(path: Path, fps: float) -> float | None:
         video = next((stream for stream in container.streams if stream.type == "video"), None)
         if video is None:
             return None
+        video.codec_context.thread_count = 1
         for index, frame in enumerate(container.decode(video=video.index)):
             gray = frame.to_ndarray(format="gray")[::8, ::8].astype(np.int16)
             current_time = float(frame.time) if frame.time is not None else index / fps
@@ -302,7 +303,18 @@ class ReviewService:
             raise PipelineError("required executable not found on PATH: ffmpeg")
         start_sec = start_frame / info.fps
         end_sec = end_frame / info.fps
-        command = [executable, "-y", "-v", "error", "-i", str(source)]
+        command = [
+            executable,
+            "-y",
+            "-v",
+            "error",
+            "-filter_threads",
+            "1",
+            "-filter_complex_threads",
+            "1",
+            "-i",
+            str(source),
+        ]
         if info.has_audio:
             command.extend(
                 [
@@ -330,6 +342,8 @@ class ReviewService:
             [
                 "-c:v",
                 "libx264",
+                "-threads",
+                "1",
                 "-crf",
                 "18",
                 "-pix_fmt",

@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -85,8 +85,17 @@ def _validate_boundaries(cut_frames: Sequence[int], frame_count: int) -> tuple[i
     return (0, *cuts, frame_count)
 
 
-def _run_ffmpeg(command: Sequence[str]) -> None:
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+def _run_ffmpeg(command: Sequence[str], *, timeout_sec: float) -> None:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ExportError(f"FFmpeg clip export timed out after {timeout_sec:.0f}s") from error
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise ExportError(f"FFmpeg clip export failed: {detail}")
@@ -99,6 +108,7 @@ def split_video(
     *,
     cache_dir: str | Path | None = None,
     config: ExportConfig | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> ExportResult:
     """Re-encode exact frame ranges into one independently playable file each."""
     settings = config or ExportConfig()
@@ -114,7 +124,10 @@ def split_video(
     destination.mkdir(parents=True, exist_ok=True)
     clips: list[ExportedClip] = []
     fps = float(context.fps)
+    total_clips = len(boundaries) - 1
     for index, (start_frame, end_frame) in enumerate(pairwise(boundaries), start=1):
+        if progress is not None:
+            progress(index, total_clips)
         start_sec = start_frame / fps
         end_sec = end_frame / fps
         frame_count = end_frame - start_frame
@@ -127,6 +140,8 @@ def split_video(
             "-y",
             "-v",
             "error",
+            "-filter_threads",
+            str(settings.ffmpeg_threads),
             "-ss",
             f"{start_sec:.12f}",
             "-i",
@@ -145,6 +160,8 @@ def split_video(
                 f"{end_sec - start_sec:.12f}",
                 "-c:v",
                 settings.video_codec,
+                "-threads",
+                str(settings.ffmpeg_threads),
                 "-preset",
                 settings.video_preset,
                 "-crf",
@@ -156,7 +173,7 @@ def split_video(
         if context.audio_path is not None:
             command.extend(["-c:a", settings.audio_codec, "-b:a", settings.audio_bitrate])
         command.extend(["-movflags", "+faststart", str(path)])
-        _run_ffmpeg(command)
+        _run_ffmpeg(command, timeout_sec=settings.ffmpeg_timeout_sec)
         clips.append(
             ExportedClip(
                 index=index,

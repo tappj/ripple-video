@@ -1269,6 +1269,8 @@ def prepare_phase_c_job(
     prompt_template_version: int = UGC_CLONE_V1.version,
     consent_affirmed: bool = False,
     owner_device_hash: str | None = None,
+    job_id: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> PreparedJob:
     """Create a fully local, no-charge Phase C job ready for confirmation."""
     source = _validate_file(video, "source video")
@@ -1296,14 +1298,15 @@ def prepare_phase_c_job(
         max_group_segments=max_group_segments,
         source_video=source,
     )
-    job_id = uuid.uuid4().hex
+    selected_job_id = job_id or uuid.uuid4().hex
     storage = LocalDiskStorage(output_root)
-    job_key = f"jobs/{job_id}"
+    job_key = f"jobs/{selected_job_id}"
     exported = split_video(
         source,
         tuple(group.end_frame for group in grouping.groups[:-1]),
         storage.path(f"{job_key}/source_segments"),
         cache_dir=cache_dir,
+        progress=progress_callback,
     )
     input_paths = tuple(
         storage.copy_in(clip.path, f"{job_key}/segments/{index}/input.mp4")
@@ -1322,7 +1325,7 @@ def prepare_phase_c_job(
     database_path = storage.path("orchestration.sqlite3")
     with PhaseCStore(database_path) as store:
         job = store.create_job(
-            job_id=job_id,
+            job_id=selected_job_id,
             source_path=source,
             target_face_path=stored_face,
             target_voice_path=stored_voice,

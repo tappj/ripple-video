@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -12,6 +13,9 @@ import pytest
 from cutdetect.pipeline.app import (
     PipelineStudioConfig,
     _health_payload,
+    _isolated_detection,
+    _load_sessions,
+    _persist_session,
     create_pipeline_server,
     render_pipeline_html,
 )
@@ -60,6 +64,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Provider blocked this clip." in html
     assert "playback-failed" in html
     assert "events?device=" in html
+    assert "ripple.pending.v1" in html
+    assert "Reconnecting" in html
 
 
 def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,6 +135,57 @@ def test_pipeline_server_serializes_memory_intensive_analysis(tmp_path: Path) ->
         server.analysis_lock.release()
     finally:
         server.server_close()
+
+
+def test_preparation_session_survives_server_restart(tmp_path: Path) -> None:
+    root = tmp_path / "jobs"
+    session_id = "a" * 32
+    state: dict[str, object] = {
+        "status": "ANALYZING",
+        "owner_hash": "b" * 64,
+        "video": str(root / "staging" / session_id / "video.mp4"),
+        "request": {"model": "seedance2", "auto_run": True},
+    }
+    _persist_session(root, session_id, state)
+
+    assert _load_sessions(root) == {session_id: state}
+    try:
+        server = create_pipeline_server(
+            PipelineStudioConfig(port=0),
+            output_root=root,
+            cache_dir=tmp_path / "cache",
+        )
+    except PermissionError:
+        pytest.skip("sandbox does not permit binding a loopback socket")
+    try:
+        assert server.sessions[session_id] == state
+    finally:
+        server.server_close()
+
+
+def test_detection_runs_in_secret_scrubbed_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    output = tmp_path / "detection"
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        output.mkdir(parents=True)
+        (output / "predictions.json").write_text('{"segments": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "must-not-enter-worker")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    predictions = _isolated_detection(video, output, tmp_path / "cache", timeout_sec=30)
+
+    assert predictions == output / "predictions.json"
+    assert "RUNWAYML_API_SECRET" not in captured["environment"]
+    assert captured["command"][:3] == [captured["command"][0], "-m", "cutdetect"]
 
 
 def test_hosted_server_health_and_optional_password(tmp_path: Path) -> None:

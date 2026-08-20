@@ -10,9 +10,12 @@ import hmac
 import json
 import mimetypes
 import os
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +23,6 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from cutdetect.detect import run_detection
 from cutdetect.pipeline.capabilities import (
     MODEL_CAPABILITIES,
     ROUTER_ASPECT_RATIOS,
@@ -62,6 +64,7 @@ class PipelineStudioConfig:
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024
     upload_chunk_bytes: int = 1024 * 1024
     access_password: str | None = None
+    detection_timeout_sec: float = 1800.0
 
 
 def _boot_payload() -> dict[str, object]:
@@ -181,10 +184,92 @@ class _PipelineServer(ThreadingHTTPServer):
     analysis_lock: threading.Lock
     active_jobs: set[str]
     active_lock: threading.Lock
+    active_preparations: set[str]
+    preparation_lock: threading.Lock
 
 
 def _valid_id(value: str) -> bool:
     return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
+
+
+def _session_state_path(root: Path, session_id: str) -> Path:
+    return root / "staging" / session_id / "session.json"
+
+
+def _persist_session(root: Path, session_id: str, state: dict[str, object]) -> None:
+    path = _session_state_path(root, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(state, default=str, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_sessions(root: Path) -> dict[str, dict[str, object]]:
+    sessions: dict[str, dict[str, object]] = {}
+    staging = root / "staging"
+    if not staging.is_dir():
+        return sessions
+    for path in staging.glob("*/session.json"):
+        session_id = path.parent.name
+        if not _valid_id(session_id):
+            continue
+        try:
+            value: object = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            sessions[session_id] = cast(dict[str, object], value)
+    return sessions
+
+
+def _isolated_detection(
+    video: Path,
+    output_dir: Path,
+    cache_dir: Path,
+    *,
+    timeout_sec: float,
+) -> Path:
+    """Run memory-intensive detection in a process that exits before encoding."""
+    environment = os.environ.copy()
+    environment.pop("RUNWAYML_API_SECRET", None)
+    environment.pop("RIPPLE_ACCESS_PASSWORD", None)
+    environment.update(
+        MALLOC_ARENA_MAX="1",
+        OMP_NUM_THREADS="1",
+        OPENBLAS_NUM_THREADS="1",
+        MKL_NUM_THREADS="1",
+        NUMEXPR_NUM_THREADS="1",
+    )
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "cutdetect",
+                "detect",
+                str(video),
+                "--output-dir",
+                str(output_dir),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise PipelineError(
+            f"cut detection timed out after {timeout_sec / 60:.0f} minutes"
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PipelineError(f"isolated cut detection failed: {detail[-2000:]}")
+    predictions = output_dir / "predictions.json"
+    if not predictions.is_file():
+        raise PipelineError("isolated cut detection finished without predictions")
+    return predictions
 
 
 def _device_hash(value: str) -> str:
@@ -268,6 +353,13 @@ class _PipelineHandler(BaseHTTPRequestHandler):
 
     def _storage(self) -> LocalDiskStorage:
         return LocalDiskStorage(self.server.root)
+
+    def _update_session(self, session_id: str, **values: object) -> dict[str, object]:
+        with self.server.session_lock:
+            state = self.server.sessions.setdefault(session_id, {"status": "UPLOADING"})
+            state.update(values, updated_at=time.time())
+            _persist_session(self.server.root, session_id, state)
+            return dict(state)
 
     def _file_url(self, path: Path) -> str:
         resolved = path.resolve()
@@ -449,11 +541,24 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     state = self.server.sessions.get(parts[2], {"status": "UPLOADING"})
                     if state.get("owner_hash") not in {None, owner_hash}:
                         raise PipelineError("this upload session belongs to another device")
-                    self._json({key: value for key, value in state.items() if key != "owner_hash"})
+                    snapshot = dict(state)
+                if snapshot.get("status") == "ANALYZING" and isinstance(
+                    snapshot.get("request"), dict
+                ):
+                    self._launch_prepare(parts[2])
+                elif snapshot.get("status") == "GENERATING" and snapshot.get("job_id"):
+                    self._resume_job_if_needed(str(snapshot["job_id"]))
+                self._json(
+                    {key: value for key, value in snapshot.items() if key != "owner_hash"}
+                )
                 return
             if len(parts) >= 3 and parts[:2] == ("api", "jobs") and _valid_id(parts[2]):
                 query = parse_qs(parsed.query)
                 owner_hash = self._owner_hash(query)
+                database = self.server.root / "orchestration.sqlite3"
+                with PhaseCStore(database) as owner_store:
+                    self._require_job_owner(owner_store, parts[2], owner_hash)
+                self._resume_job_if_needed(parts[2])
                 if len(parts) == 4 and parts[3] == "events":
                     self._events(parts[2], query, owner_hash)
                 elif len(parts) == 3:
@@ -506,6 +611,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             state = self.server.sessions.setdefault(session_id, {"status": "UPLOADING"})
             state.update(owner_hash=owner_hash)
             state[role] = str(destination)
+            state["updated_at"] = time.time()
+            _persist_session(self.server.root, session_id, state)
         self._json({"role": role, "filename": filename})
 
     def _prepare(self, session_id: str, body: dict[str, object]) -> None:
@@ -530,84 +637,176 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 status="ANALYZING",
                 stage="Detecting hard cuts…",
                 message="Reading visual and audio boundary evidence.",
+                request={
+                    "model": str(body.get("model", "seedance2")),
+                    "ratio": str(body.get("ratio")) if body.get("ratio") else None,
+                    "resolution": (
+                        str(body.get("resolution")) if body.get("resolution") else None
+                    ),
+                    "prompt": str(body.get("prompt", "")),
+                    "template_id": str(body.get("template_id", "ugc_clone_v1")),
+                    "template_version": int(str(body.get("template_version", 1))),
+                    "auto_run": body.get("auto_run") is True,
+                },
+                updated_at=time.time(),
             )
             self.server.sessions[session_id] = state
+            _persist_session(self.server.root, session_id, state)
+
+        self._launch_prepare(session_id)
+        self._json({"status": "ANALYZING"}, HTTPStatus.ACCEPTED)
+
+    def _launch_prepare(self, session_id: str) -> None:
+        with self.server.preparation_lock:
+            if session_id in self.server.active_preparations:
+                return
+            self.server.active_preparations.add(session_id)
 
         def work() -> None:
             try:
-                session_dir = self.server.root / "staging" / session_id
-                if not self.server.analysis_lock.acquire(blocking=False):
-                    with self.server.session_lock:
-                        self.server.sessions[session_id].update(
-                            stage="Queued for analysis…",
-                            message="Another source is being analyzed on this instance.",
-                        )
-                    self.server.analysis_lock.acquire()
-                try:
-                    with self.server.session_lock:
-                        self.server.sessions[session_id].update(
-                            stage="Detecting hard cuts…",
-                            message="Reading visual and audio boundary evidence.",
-                        )
-                    detection = run_detection(
-                        video,
-                        session_dir / "detection",
-                        cache_dir=self.server.cache_dir,
-                    )
-                    with self.server.session_lock:
-                        self.server.sessions[session_id].update(
-                            stage="Grouping complete sections…",
-                            message=(
-                                "Balancing 4–10 second clips; short cuts may merge up to 15 "
-                                "seconds and long shots split at audio pauses."
-                            ),
-                        )
-                    prepared = prepare_phase_c_job(
-                        video,
-                        image,
-                        audio,
-                        predictions=detection.predictions_path,
-                        output_root=self.server.root,
-                        cache_dir=self.server.cache_dir,
-                        model_id=str(body.get("model", "seedance2")),
-                        ratio=str(body.get("ratio")) if body.get("ratio") else None,
-                        resolution=(
-                            str(body.get("resolution")) if body.get("resolution") else None
-                        ),
-                        prompt=str(body.get("prompt", "")),
-                        prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
-                        prompt_template_version=int(str(body.get("template_version", 1))),
-                        consent_affirmed=True,
-                        owner_device_hash=owner_hash,
-                    )
-                finally:
-                    self.server.analysis_lock.release()
-                auto_run = body.get("auto_run") is True
-                with self.server.session_lock:
-                    self.server.sessions[session_id].update(
-                        status="GENERATING" if auto_run else "READY",
-                        stage="Generating clips…" if auto_run else "Plan ready.",
-                        message=(
-                            f"Using up to {prepared.job.estimated_credits} credits."
-                            if auto_run
-                            else f"Estimated at {prepared.job.estimated_credits} credits."
-                        ),
-                        estimated_credits=prepared.job.estimated_credits,
-                        job_id=prepared.job.id,
-                    )
-                if auto_run:
-                    self._start_job(prepared.job.id, prepared.job.estimated_credits)
-            except Exception as error:
-                with self.server.session_lock:
-                    self.server.sessions[session_id].update(status="FAILED", error=str(error))
+                self._prepare_work(session_id)
+            finally:
+                with self.server.preparation_lock:
+                    self.server.active_preparations.discard(session_id)
 
         threading.Thread(target=work, daemon=True).start()
-        self._json({"status": "ANALYZING"}, HTTPStatus.ACCEPTED)
+
+    def _prepare_work(self, session_id: str) -> None:
+        acquired = False
+        try:
+            with self.server.session_lock:
+                state = dict(self.server.sessions[session_id])
+            request = state.get("request")
+            if not isinstance(request, dict):
+                raise PipelineError("saved preparation settings are unavailable")
+            body = cast(dict[str, object], request)
+            owner_hash = str(state.get("owner_hash", ""))
+            video = Path(str(state.get("video", "")))
+            image = Path(str(state.get("image", "")))
+            audio_value = state.get("audio")
+            audio = Path(str(audio_value)) if audio_value else None
+            if not video.is_file() or not image.is_file() or (audio and not audio.is_file()):
+                raise PipelineError("saved preparation inputs are unavailable")
+
+            if not self.server.analysis_lock.acquire(blocking=False):
+                self._update_session(
+                    session_id,
+                    stage="Queued for analysis…",
+                    message="Another source is being analyzed on this instance.",
+                )
+                self.server.analysis_lock.acquire()
+            acquired = True
+            session_dir = self.server.root / "staging" / session_id
+            predictions = session_dir / "detection" / "predictions.json"
+            if not predictions.is_file():
+                self._update_session(
+                    session_id,
+                    stage="Detecting hard cuts…",
+                    message="Running cut analysis in an isolated memory worker.",
+                )
+                predictions = _isolated_detection(
+                    video,
+                    session_dir / "detection",
+                    self.server.cache_dir,
+                    timeout_sec=self.server.config.detection_timeout_sec,
+                )
+            self._update_session(
+                session_id,
+                stage="Planning generation clips…",
+                message=(
+                    "Balancing short sections and selecting audio pauses for long shots."
+                ),
+            )
+
+            existing_job = None
+            database = self.server.root / "orchestration.sqlite3"
+            if database.is_file():
+                with PhaseCStore(database) as store, suppress(PipelineError):
+                    existing_job = store.job(session_id)
+            if existing_job is None:
+
+                def encoding_progress(index: int, total: int) -> None:
+                    self._update_session(
+                        session_id,
+                        stage=f"Encoding source clip {index} of {total}…",
+                        message=(
+                            "Preparing independent browser-safe inputs with one FFmpeg thread."
+                        ),
+                    )
+
+                prepared = prepare_phase_c_job(
+                    video,
+                    image,
+                    audio,
+                    predictions=predictions,
+                    output_root=self.server.root,
+                    cache_dir=self.server.cache_dir,
+                    model_id=str(body.get("model", "seedance2")),
+                    ratio=str(body.get("ratio")) if body.get("ratio") else None,
+                    resolution=(
+                        str(body.get("resolution")) if body.get("resolution") else None
+                    ),
+                    prompt=str(body.get("prompt", "")),
+                    prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
+                    prompt_template_version=int(str(body.get("template_version", 1))),
+                    consent_affirmed=True,
+                    owner_device_hash=owner_hash,
+                    job_id=session_id,
+                    progress_callback=encoding_progress,
+                )
+                job = prepared.job
+            else:
+                job = existing_job
+
+            auto_run = body.get("auto_run") is True
+            self._update_session(
+                session_id,
+                status="GENERATING" if auto_run else "READY",
+                stage="Generating clips…" if auto_run else "Plan ready.",
+                message=(
+                    f"Using up to {job.estimated_credits} credits."
+                    if auto_run
+                    else f"Estimated at {job.estimated_credits} credits."
+                ),
+                estimated_credits=job.estimated_credits,
+                job_id=job.id,
+                error=None,
+            )
+            if auto_run:
+                self._start_job(job.id, job.max_credits or job.estimated_credits)
+        except Exception as error:
+            self._update_session(
+                session_id,
+                status="FAILED",
+                stage="Preparation stopped.",
+                message="The local preparation worker could not finish.",
+                error=str(error),
+            )
+        finally:
+            if acquired:
+                self.server.analysis_lock.release()
+
+    def _resume_job_if_needed(self, job_id: str) -> None:
+        database = self.server.root / "orchestration.sqlite3"
+        if not database.is_file():
+            return
+        with PhaseCStore(database) as store:
+            try:
+                job = store.job(job_id)
+            except PipelineError:
+                return
+        if job.state in {
+            JobState.DRAFT,
+            JobState.ESTIMATING,
+            JobState.CONFIRMED,
+            JobState.RUNNING,
+        }:
+            self._start_job(job.id, job.max_credits or job.estimated_credits)
 
     def _start_job(self, job_id: str, max_credits: int) -> None:
         with self.server.active_lock:
             if job_id in self.server.active_jobs:
-                raise PipelineError("this job already has an active worker")
+                return
             self.server.active_jobs.add(job_id)
 
         def work() -> None:
@@ -774,11 +973,13 @@ def create_pipeline_server(
     server.root.mkdir(parents=True, exist_ok=True)
     server.cache_dir.mkdir(parents=True, exist_ok=True)
     server.html = render_pipeline_html().encode()
-    server.sessions = {}
+    server.sessions = _load_sessions(server.root)
     server.session_lock = threading.Lock()
     server.analysis_lock = threading.Lock()
     server.active_jobs = set()
     server.active_lock = threading.Lock()
+    server.active_preparations = set()
+    server.preparation_lock = threading.Lock()
     return server
 
 
