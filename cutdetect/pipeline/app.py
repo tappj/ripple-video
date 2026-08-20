@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import mimetypes
@@ -186,8 +187,25 @@ def _valid_id(value: str) -> bool:
     return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
 
 
+def _device_hash(value: str) -> str:
+    if not _valid_id(value):
+        raise PipelineError("browser identity is missing; refresh Ripple and try again")
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 class _PipelineHandler(BaseHTTPRequestHandler):
     server: _PipelineServer
+
+    def _owner_hash(self, query: dict[str, list[str]] | None = None) -> str:
+        value = self.headers.get("X-Ripple-Device", "")
+        if not value and query is not None:
+            value = query.get("device", [""])[0]
+        return _device_hash(value)
+
+    @staticmethod
+    def _require_job_owner(store: PhaseCStore, job_id: str, owner_hash: str) -> None:
+        if not store.job_owned_by(job_id, owner_hash):
+            raise PipelineError("this generation is not available on this device")
 
     def _authorized(self) -> bool:
         password = self.server.config.access_password
@@ -292,9 +310,10 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             while chunk := stream.read(self.server.config.upload_chunk_bytes):
                 self.wfile.write(chunk)
 
-    def _job_payload(self, job_id: str) -> dict[str, object]:
+    def _job_payload(self, job_id: str, owner_hash: str) -> dict[str, object]:
         storage = self._storage()
         with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
+            self._require_job_owner(store, job_id, owner_hash)
             status = job_status(store, job_id)
             review = ReviewService(store=store, storage=storage).snapshot(job_id)
             segments = store.segments(job_id)
@@ -302,7 +321,14 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             for segment in segments:
                 raw = storage.path(segment.output_key)
                 final = storage.path(segment.final_output_key) if segment.final_output_key else None
-                review_media = prepare_review_proxy(raw) if raw.is_file() else None
+                review_media = None
+                playback_error = None
+                review_source = final if final is not None and final.is_file() else raw
+                if review_source.is_file():
+                    try:
+                        review_media = prepare_review_proxy(review_source)
+                    except PipelineError as error:
+                        playback_error = str(error)
                 item = next(
                     cast(dict[str, object], value)
                     for value in cast(list[object], status["segments"])
@@ -312,8 +338,17 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     {
                         **item,
                         "source_url": self._file_url(segment.input_path),
-                        "output_url": self._file_url(review_media) if review_media else None,
-                        "final_url": self._file_url(final) if final and final.is_file() else None,
+                        "output_url": (
+                            self._file_url(review_media)
+                            if review_media is not None and review_source == raw
+                            else None
+                        ),
+                        "final_url": (
+                            self._file_url(review_media)
+                            if review_media is not None and review_source != raw
+                            else None
+                        ),
+                        "playback_error": playback_error,
                     }
                 )
             job = store.job(job_id)
@@ -347,14 +382,16 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     payload["validation"] = value["validation"]
             return payload
 
-    def _events(self, job_id: str, query: dict[str, list[str]]) -> None:
+    def _events(self, job_id: str, query: dict[str, list[str]], owner_hash: str) -> None:
+        storage = self._storage()
+        with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
+            self._require_job_owner(store, job_id, owner_hash)
         last_id = int(self.headers.get("Last-Event-ID", query.get("last_id", ["0"])[0]))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        storage = self._storage()
         started = time.monotonic()
         try:
             with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
@@ -384,6 +421,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 self._send(self.server.html, "text/html; charset=utf-8")
                 return
             if route == "/api/jobs":
+                owner_hash = self._owner_hash()
                 storage = self._storage()
                 database = storage.path("orchestration.sqlite3")
                 if not database.is_file():
@@ -399,21 +437,27 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                                     "model_id": job.model_id,
                                     "created_at": job.created_at,
                                 }
-                                for job in store.jobs()[:12]
+                                for job in store.jobs_for_device(owner_hash)[:12]
                             ]
                         }
                     )
                 return
             parts = Path(route.lstrip("/")).parts
             if len(parts) == 3 and parts[:2] == ("api", "sessions") and _valid_id(parts[2]):
+                owner_hash = self._owner_hash()
                 with self.server.session_lock:
-                    self._json(self.server.sessions.get(parts[2], {"status": "UPLOADING"}))
+                    state = self.server.sessions.get(parts[2], {"status": "UPLOADING"})
+                    if state.get("owner_hash") not in {None, owner_hash}:
+                        raise PipelineError("this upload session belongs to another device")
+                    self._json({key: value for key, value in state.items() if key != "owner_hash"})
                 return
             if len(parts) >= 3 and parts[:2] == ("api", "jobs") and _valid_id(parts[2]):
+                query = parse_qs(parsed.query)
+                owner_hash = self._owner_hash(query)
                 if len(parts) == 4 and parts[3] == "events":
-                    self._events(parts[2], parse_qs(parsed.query))
+                    self._events(parts[2], query, owner_hash)
                 elif len(parts) == 3:
-                    self._json(self._job_payload(parts[2]))
+                    self._json(self._job_payload(parts[2], owner_hash))
                 else:
                     self._send(b"not found\n", "text/plain", HTTPStatus.NOT_FOUND)
                 return
@@ -428,6 +472,11 @@ class _PipelineHandler(BaseHTTPRequestHandler):
     def _save_upload(self, session_id: str, role: str) -> None:
         if not _valid_id(session_id) or role not in {"video", "image", "audio"}:
             raise PipelineError("invalid upload target")
+        owner_hash = self._owner_hash()
+        with self.server.session_lock:
+            existing = self.server.sessions.get(session_id)
+            if existing is not None and existing.get("owner_hash") not in {None, owner_hash}:
+                raise PipelineError("this upload session belongs to another device")
         length = int(self.headers.get("Content-Length", "0"))
         if length < 512 or length > self.server.config.max_upload_bytes:
             limit_mib = self.server.config.max_upload_bytes // (1024 * 1024)
@@ -455,14 +504,18 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 remaining -= len(chunk)
         with self.server.session_lock:
             state = self.server.sessions.setdefault(session_id, {"status": "UPLOADING"})
+            state.update(owner_hash=owner_hash)
             state[role] = str(destination)
         self._json({"role": role, "filename": filename})
 
     def _prepare(self, session_id: str, body: dict[str, object]) -> None:
         if not _valid_id(session_id) or body.get("consent") is not True:
             raise PipelineError("permission confirmation is required")
+        owner_hash = self._owner_hash()
         with self.server.session_lock:
             state = self.server.sessions.get(session_id, {})
+            if state.get("owner_hash") != owner_hash:
+                raise PipelineError("this upload session belongs to another device")
             video = Path(str(state.get("video", "")))
             image = Path(str(state.get("image", "")))
             audio_value = state.get("audio")
@@ -522,6 +575,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
                         prompt_template_version=int(str(body.get("template_version", 1))),
                         consent_affirmed=True,
+                        owner_device_hash=owner_hash,
                     )
                 finally:
                     self.server.analysis_lock.release()
@@ -628,7 +682,10 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 return
             if len(parts) >= 4 and parts[:2] == ("api", "jobs") and _valid_id(parts[2]):
                 job_id = parts[2]
+                owner_hash = self._owner_hash()
                 storage = self._storage()
+                with PhaseCStore(storage.path("orchestration.sqlite3")) as owner_store:
+                    self._require_job_owner(owner_store, job_id, owner_hash)
                 if len(parts) == 4 and parts[3] == "run":
                     body = self._body()
                     self._run_job(job_id, int(str(body.get("max_credits", 0))))
@@ -637,7 +694,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     review = ReviewService(store=store, storage=storage)
                     if len(parts) == 4 and parts[3] == "approve-all":
                         review.approve_all(job_id)
-                        self._json(self._job_payload(job_id))
+                        self._json(self._job_payload(job_id, owner_hash))
                         return
                     if len(parts) == 4 and parts[3] == "stitch":
                         with self.server.active_lock:

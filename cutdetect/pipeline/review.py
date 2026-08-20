@@ -6,6 +6,7 @@ import math
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from cutdetect.pipeline.orchestration import (
 )
 from cutdetect.pipeline.runway_client import PipelineError
 from cutdetect.pipeline.storage import LocalDiskStorage
+
+_REVIEW_PROXY_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,16 +167,39 @@ def suggest_trim(path: Path) -> TrimSuggestion:
 
 
 def prepare_review_proxy(source: Path) -> Path:
-    """Create a stream-copy MP4 with its playback index at the front."""
-    destination = source.with_name(f"{source.stem}_review.mp4")
+    """Create a browser-safe review MP4 without modifying the provider output."""
+    destination = source.with_name(f"{source.stem}_review_h264.mp4")
     if destination.is_file() and destination.stat().st_mtime_ns >= source.stat().st_mtime_ns:
         return destination
     executable = shutil.which("ffmpeg")
     if executable is None:
         raise PipelineError("required executable not found on PATH: ffmpeg")
-    temporary = destination.with_suffix(".mp4.part")
-    completed = subprocess.run(
-        [
+    with _REVIEW_PROXY_LOCK:
+        if destination.is_file() and destination.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+            return destination
+        try:
+            with av.open(str(source)) as container:
+                video = next(
+                    (stream for stream in container.streams if stream.type == "video"), None
+                )
+                audio = next(
+                    (stream for stream in container.streams if stream.type == "audio"), None
+                )
+                pixel_format = cast(
+                    str | None,
+                    getattr(video.codec_context, "pix_fmt", None) if video is not None else None,
+                )
+                browser_safe = (
+                    video is not None
+                    and video.codec_context.name == "h264"
+                    and pixel_format in {"yuv420p", "yuvj420p"}
+                    and (audio is None or audio.codec_context.name == "aac")
+                )
+        except (av.error.FFmpegError, OSError) as error:
+            message = f"could not inspect provider output for playback: {error}"
+            raise PipelineError(message) from error
+        temporary = destination.with_suffix(".mp4.part")
+        command = [
             executable,
             "-y",
             "-v",
@@ -181,23 +207,44 @@ def prepare_review_proxy(source: Path) -> Path:
             "-i",
             str(source),
             "-map",
-            "0",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-            str(temporary),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise PipelineError(f"could not prepare browser review media: {detail}")
-    temporary.replace(destination)
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-sn",
+            "-dn",
+        ]
+        if browser_safe:
+            command.extend(["-c", "copy"])
+        else:
+            command.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "20",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-threads",
+                    "1",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "160k",
+                ]
+            )
+        command.extend(["-movflags", "+faststart", "-f", "mp4", str(temporary)])
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise PipelineError(f"could not prepare browser review media: {detail}")
+        temporary.replace(destination)
     return destination
 
 

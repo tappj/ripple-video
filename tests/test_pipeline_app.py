@@ -49,6 +49,14 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Original reference" not in html
     assert "Source vs clone QC" not in html
     assert "RUNWAYML_API_SECRET" not in html
+    assert "ripple.device.v1" in html
+    assert "ripple.history.v1" in html
+    assert "X-Ripple-Device" in html
+    assert "No generations on this device yet." in html
+    assert "Generation failed." in html
+    assert "Retry clip" in html
+    assert "playback-failed" in html
+    assert "events?device=" in html
 
 
 def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -87,7 +95,10 @@ def test_phase_e_server_serves_ui_and_empty_job_index(tmp_path: Path) -> None:
         base = f"http://127.0.0.1:{server.server_port}"
         with urllib.request.urlopen(base + "/", timeout=5) as response:
             html = response.read().decode()
-        with urllib.request.urlopen(base + "/api/jobs", timeout=5) as response:
+        request = urllib.request.Request(
+            base + "/api/jobs", headers={"X-Ripple-Device": "a" * 32}
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
             jobs = json.loads(response.read())
 
         assert response.status == 200

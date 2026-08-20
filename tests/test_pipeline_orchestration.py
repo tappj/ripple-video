@@ -66,10 +66,17 @@ class FakeGateway:
         return destination
 
 
-def _create_job(store: PhaseCStore, root: Path, count: int) -> str:
-    source = root / "source.mp4"
-    face = root / "face.jpg"
-    voice = root / "voice.mp3"
+def _create_job(
+    store: PhaseCStore,
+    root: Path,
+    count: int,
+    *,
+    job_id: str = "test-job",
+    owner_device_hash: str | None = None,
+) -> str:
+    source = root / f"{job_id}-source.mp4"
+    face = root / f"{job_id}-face.jpg"
+    voice = root / f"{job_id}-voice.mp3"
     for path in (source, face, voice):
         path.write_bytes(b"test")
     segments = tuple(
@@ -89,13 +96,13 @@ def _create_job(store: PhaseCStore, root: Path, count: int) -> str:
     inputs = []
     outputs = []
     for index in range(count):
-        path = root / "jobs" / "test-job" / "segments" / str(index) / "input.mp4"
+        path = root / "jobs" / job_id / "segments" / str(index) / "input.mp4"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"segment")
         inputs.append(path)
-        outputs.append(f"jobs/test-job/segments/{index}/output_raw.mp4")
+        outputs.append(f"jobs/{job_id}/segments/{index}/output_raw.mp4")
     store.create_job(
-        job_id="test-job",
+        job_id=job_id,
         source_path=source,
         target_face_path=face,
         target_voice_path=voice,
@@ -106,8 +113,35 @@ def _create_job(store: PhaseCStore, root: Path, count: int) -> str:
         model_id="hailuo3",
         ratio="9:16",
         resolution="768P",
+        owner_device_hash=owner_device_hash,
     )
-    return "test-job"
+    return job_id
+
+
+def test_jobs_are_isolated_by_device_identity(tmp_path: Path) -> None:
+    store = PhaseCStore(tmp_path / "jobs.sqlite3")
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    first_job = _create_job(
+        store,
+        tmp_path,
+        1,
+        job_id="a" * 32,
+        owner_device_hash=first_hash,
+    )
+    second_job = _create_job(
+        store,
+        tmp_path,
+        1,
+        job_id="b" * 32,
+        owner_device_hash=second_hash,
+    )
+
+    assert [job.id for job in store.jobs_for_device(first_hash)] == [first_job]
+    assert [job.id for job in store.jobs_for_device(second_hash)] == [second_job]
+    assert store.job_owned_by(first_job, first_hash)
+    assert not store.job_owned_by(first_job, second_hash)
+    store.close()
 
 
 def test_submits_every_segment_before_polling_and_reuses_references(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import av
 import pytest
 
 from cutdetect.pipeline.grouping import AtomicSegment, group_atomic_segments
@@ -15,7 +16,7 @@ from cutdetect.pipeline.stitch import stitch_job
 from cutdetect.pipeline.storage import LocalDiskStorage
 
 
-def _media_fixture(path: Path) -> None:
+def _media_fixture(path: Path, *, pixel_format: str = "yuv420p") -> None:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         pytest.skip("ffmpeg is required for media review tests")
@@ -44,7 +45,7 @@ def _media_fixture(path: Path) -> None:
             "-c:v",
             "libx264",
             "-pix_fmt",
-            "yuv420p",
+            pixel_format,
             "-c:a",
             "aac",
             str(path),
@@ -129,18 +130,32 @@ def test_suggest_trim_approve_and_stitch_gate_are_reversible(tmp_path: Path) -> 
     store.close()
 
 
-def test_review_proxy_moves_mp4_index_without_touching_raw(tmp_path: Path) -> None:
+def test_review_proxy_is_browser_safe_without_touching_raw(tmp_path: Path) -> None:
     raw = tmp_path / "output_raw.mp4"
-    _media_fixture(raw)
+    _media_fixture(raw, pixel_format="yuv444p")
     original_hash = _sha256(raw)
 
     proxy = prepare_review_proxy(raw)
 
     proxy_bytes = proxy.read_bytes()
-    assert proxy.name == "output_raw_review.mp4"
+    assert proxy.name == "output_raw_review_h264.mp4"
     assert proxy_bytes.find(b"moov") < proxy_bytes.find(b"mdat")
     assert _sha256(raw) == original_hash
     assert inspect_media(proxy).duration_sec == pytest.approx(inspect_media(raw).duration_sec)
+    with av.open(str(proxy)) as container:
+        video = next(stream for stream in container.streams if stream.type == "video")
+        audio = next(stream for stream in container.streams if stream.type == "audio")
+        assert video.codec_context.name == "h264"
+        assert video.codec_context.pix_fmt == "yuv420p"
+        assert audio.codec_context.name == "aac"
+
+
+def test_review_proxy_reports_corrupt_provider_output(tmp_path: Path) -> None:
+    raw = tmp_path / "output_raw.mp4"
+    raw.write_bytes(b"not a playable media file")
+
+    with pytest.raises(PipelineError, match="inspect provider output for playback"):
+        prepare_review_proxy(raw)
 
 
 def test_regeneration_keeps_old_raw_and_requires_incremental_ceiling(tmp_path: Path) -> None:

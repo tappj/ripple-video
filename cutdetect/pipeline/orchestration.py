@@ -253,6 +253,7 @@ class PhaseCStore:
                 target_face_uri TEXT,
                 target_voice_uri TEXT,
                 references_uploaded_at TEXT,
+                owner_device_hash TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -311,6 +312,7 @@ class PhaseCStore:
         self._ensure_column("jobs", "final_output_key", "TEXT")
         self._ensure_column("jobs", "qc_output_key", "TEXT")
         self._ensure_column("jobs", "completed_at", "TEXT")
+        self._ensure_column("jobs", "owner_device_hash", "TEXT")
         self._ensure_column("segments", "requested_duration_sec", "INTEGER NOT NULL DEFAULT 10")
         self._ensure_column("segments", "estimated_credits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("segments", "hard_cut_offsets_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -369,6 +371,7 @@ class PhaseCStore:
         prompt_template_id: str = UGC_CLONE_V1.id,
         prompt_template_version: int = UGC_CLONE_V1.version,
         consent_affirmed: bool = False,
+        owner_device_hash: str | None = None,
     ) -> JobRecord:
         if len(input_paths) != len(grouping.groups) or len(output_keys) != len(grouping.groups):
             raise ValueError("every generation group needs one input and output path")
@@ -424,8 +427,8 @@ class PhaseCStore:
                     id, state, source_path, target_face_path, target_voice_path,
                     prompt, prompt_template_id, prompt_template_version, consent_affirmed_at,
                     workflow_id, model_id, ratio, resolution,
-                    estimated_credits, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    estimated_credits, owner_device_hash, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -442,6 +445,7 @@ class PhaseCStore:
                     ratio,
                     resolution,
                     estimated,
+                    owner_device_hash,
                     _timestamp(created),
                     _timestamp(created),
                 ),
@@ -536,6 +540,22 @@ class PhaseCStore:
     def jobs(self) -> tuple[JobRecord, ...]:
         rows = self._connection.execute("SELECT * FROM jobs ORDER BY created_at DESC").fetchall()
         return tuple(self._job_from_row(row) for row in rows)
+
+    def jobs_for_device(self, owner_device_hash: str) -> tuple[JobRecord, ...]:
+        """Return only jobs created by one browser-scoped device identity."""
+        rows = self._connection.execute(
+            "SELECT * FROM jobs WHERE owner_device_hash = ? ORDER BY created_at DESC",
+            (owner_device_hash,),
+        ).fetchall()
+        return tuple(self._job_from_row(row) for row in rows)
+
+    def job_owned_by(self, job_id: str, owner_device_hash: str) -> bool:
+        """Check ownership without exposing the stored identity hash."""
+        row = self._connection.execute(
+            "SELECT 1 FROM jobs WHERE id = ? AND owner_device_hash = ?",
+            (job_id, owner_device_hash),
+        ).fetchone()
+        return row is not None
 
     def _segment_from_row(self, row: sqlite3.Row) -> SegmentRecord:
         return SegmentRecord(
@@ -1231,6 +1251,7 @@ def prepare_phase_c_job(
     prompt_template_id: str = UGC_CLONE_V1.id,
     prompt_template_version: int = UGC_CLONE_V1.version,
     consent_affirmed: bool = False,
+    owner_device_hash: str | None = None,
 ) -> PreparedJob:
     """Create a fully local, no-charge Phase C job ready for confirmation."""
     source = _validate_file(video, "source video")
@@ -1298,6 +1319,7 @@ def prepare_phase_c_job(
             prompt_template_id=prompt_template_id,
             prompt_template_version=prompt_template_version,
             consent_affirmed=consent_affirmed,
+            owner_device_hash=owner_device_hash,
         )
     manifest = {
         "job_id": job.id,
