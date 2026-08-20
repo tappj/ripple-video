@@ -9,7 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RIPPLE_MAX_UPLOAD_MIB=256
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      ffmpeg \
+      libgl1 \
+      libgles2 \
+      libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,6 +23,7 @@ COPY pyproject.toml README.md ./
 COPY cutdetect ./cutdetect
 
 RUN python -m pip install --no-cache-dir ".[features]" \
+    && python -c "import cv2, mediapipe" \
     && mkdir -p /app/.cutdetect/models \
     && curl -fsSL \
       https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task \
