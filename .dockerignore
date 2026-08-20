@@ -3,3 +3,5 @@
 !README.md
 !cutdetect
 !cutdetect/**
+!scripts
+!scripts/container_feature_smoke.py
