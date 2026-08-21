@@ -32,7 +32,7 @@ from cutdetect.pipeline.runway_client import (
     RunwayReferenceModel,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import UGC_CLONE_V1
+from cutdetect.pipeline.templates import UGC_CLONE_V1, strict_generation_prompt
 from cutdetect.pipeline.workflow_client import (
     is_workflow_route,
     workflow_spec_for_model,
@@ -1057,7 +1057,7 @@ class PhaseCWorker:
                 reference_video=source_uri,
                 reference_image=refreshed_job.target_face_uri,
                 reference_audio=refreshed_job.target_voice_uri,
-                prompt_text=segment.prompt_override or job.prompt,
+                prompt_text=strict_generation_prompt(segment.prompt_override or job.prompt),
                 duration=segment.requested_duration_sec,
                 ratio=job.ratio,
                 reference_video_duration_sec=segment.duration_sec,

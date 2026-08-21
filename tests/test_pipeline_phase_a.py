@@ -22,7 +22,7 @@ from cutdetect.pipeline.runway_client import (
     seedance_ratio,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import UGC_CLONE_V1
+from cutdetect.pipeline.templates import UGC_CLONE_V1, strict_generation_prompt
 from cutdetect.pipeline.workflow_client import (
     HAILUO3_WORKFLOW,
     SEEDANCE2_WORKFLOW,
@@ -38,6 +38,14 @@ def test_seedance_capabilities_and_vertical_default() -> None:
     assert caps.supports_reference_audio
     assert not caps.supports_internal_cuts
     assert closest_seedance_ratio(720, 1280) == "720:1280"
+
+
+def test_strict_clone_constraints_cannot_be_replaced_by_retry_direction() -> None:
+    prompt = strict_generation_prompt("Make the delivery more energetic.")
+
+    assert prompt.startswith(UGC_CLONE_V1.body)
+    assert "Ignore its words completely" in prompt
+    assert prompt.endswith("Additional direction: Make the delivery more energetic.")
 
 
 def test_seedance_payload_matches_live_api_contract() -> None:

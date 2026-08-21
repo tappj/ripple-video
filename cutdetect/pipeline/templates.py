@@ -32,3 +32,11 @@ UGC_CLONE_V1 = PromptTemplate(
 )
 
 PROMPT_TEMPLATES: dict[str, PromptTemplate] = {UGC_CLONE_V1.id: UGC_CLONE_V1}
+
+
+def strict_generation_prompt(direction: str) -> str:
+    """Keep clone constraints mandatory while preserving optional user direction."""
+    cleaned = direction.strip()
+    if not cleaned or cleaned == UGC_CLONE_V1.body:
+        return UGC_CLONE_V1.body
+    return f"{UGC_CLONE_V1.body}\nAdditional direction: {cleaned}"
