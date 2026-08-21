@@ -616,46 +616,37 @@ class PhaseCStore:
         return tuple(self._segment_from_row(row) for row in rows)
 
     def confirm(self, job_id: str, max_credits: int) -> JobRecord:
+        """Confirm a job without imposing a Ripple-side submission ceiling."""
         job = self.job(job_id)
         if job.state not in {JobState.DRAFT, JobState.ESTIMATING, JobState.CONFIRMED}:
             raise PipelineError(f"job {job_id} cannot be confirmed from {job.state.value}")
-        if max_credits < job.estimated_credits:
-            raise CreditLimitError(
-                f"job requires an initial ceiling of at least {job.estimated_credits} credits; "
-                f"received {max_credits}"
-            )
         changed = _now()
         with self._connection:
             self._connection.execute(
                 "UPDATE jobs SET state = ?, max_credits = ?, updated_at = ? WHERE id = ?",
-                (JobState.CONFIRMED.value, max_credits, _timestamp(changed), job_id),
+                (JobState.CONFIRMED.value, None, _timestamp(changed), job_id),
             )
             self._event(
                 job_id,
                 "job.confirmed",
-                payload={"max_credits": max_credits},
+                payload={"estimated_credits": job.estimated_credits},
                 at=changed,
             )
         return self.job(job_id)
 
     def raise_credit_ceiling(self, job_id: str, max_credits: int) -> JobRecord:
-        """Raise, but never lower, the locked ceiling for an explicit review action."""
+        """Remove a legacy Ripple-side ceiling while preserving API compatibility."""
         job = self.job(job_id)
-        current = job.max_credits or 0
-        if max_credits < current:
-            raise CreditLimitError(
-                f"credit ceiling cannot be lowered from {current} to {max_credits}"
-            )
         changed = _now()
         with self._connection:
             self._connection.execute(
                 "UPDATE jobs SET max_credits = ?, updated_at = ? WHERE id = ?",
-                (max_credits, _timestamp(changed), job_id),
+                (None, _timestamp(changed), job_id),
             )
             self._event(
                 job_id,
-                "job.credit_ceiling_raised",
-                payload={"previous": current, "max_credits": max_credits},
+                "job.credit_ceiling_removed",
+                payload={"previous": job.max_credits},
                 at=changed,
             )
         return self.job(job_id)
@@ -678,13 +669,6 @@ class PhaseCStore:
             SegmentState.FAILED,
         }:
             raise PipelineError(f"segment {index} cannot regenerate from {segment.state.value}")
-        job = self.job(job_id)
-        required_ceiling = job.submitted_credits + segment.estimated_credits
-        if required_ceiling > max_credits:
-            raise CreditLimitError(
-                f"regenerating segment {index} requires a ceiling of at least "
-                f"{required_ceiling} credits"
-            )
         self.raise_credit_ceiling(job_id, max_credits)
         previous_key = Path(segment.output_key)
         next_attempt = segment.attempt_count + 1
@@ -846,16 +830,12 @@ class PhaseCStore:
         return self.segments(job_id)[index]
 
     def has_submission_budget(self, job_id: str, index: int) -> bool:
-        job = self.job(job_id)
-        segment = self.segments(job_id)[index]
-        return (
-            job.max_credits is not None
-            and job.submitted_credits + segment.estimated_credits <= job.max_credits
-        )
+        """Return true now that Runway, rather than Ripple, controls account spending."""
+        self.job(job_id)
+        self.segments(job_id)[index]
+        return True
 
     def mark_submitted(self, job_id: str, index: int, invocation_id: str) -> SegmentRecord:
-        if not self.has_submission_budget(job_id, index):
-            raise CreditLimitError(f"job {job_id} has reached its credit ceiling")
         segment = self.segments(job_id)[index]
         changed = _now()
         with self._connection:
@@ -1019,15 +999,6 @@ class PhaseCWorker:
         )
 
     def _submit(self, job: JobRecord, segment: SegmentRecord) -> None:
-        if not self.store.has_submission_budget(job.id, segment.index):
-            self.store.set_segment_state(
-                job.id,
-                segment.index,
-                SegmentState.FAILED,
-                failure_code="CREDIT_LIMIT",
-                failure_message="submission would exceed the explicit job credit ceiling",
-            )
-            return
         self.store.set_segment_state(job.id, segment.index, SegmentState.UPLOADING)
         current = self.now()
         try:

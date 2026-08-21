@@ -44,8 +44,21 @@ def test_strict_clone_constraints_cannot_be_replaced_by_retry_direction() -> Non
     prompt = strict_generation_prompt("Make the delivery more energetic.")
 
     assert prompt.startswith(UGC_CLONE_V1.body)
-    assert "Ignore its words completely" in prompt
+    assert "preserving the exact words and timing" in prompt
     assert prompt.endswith("Additional direction: Make the delivery more energetic.")
+
+
+def test_superseded_builtin_prompt_is_not_appended_to_current_prompt() -> None:
+    previous_default = (
+        "Recreate Video 1 exactly at its original duration. Video 1 is the only source for "
+        "dialogue, wording, timing, motion, cuts, framing, background, and background audio. "
+        "Do not slow, extend, loop, or add footage. Use Image 1 only for facial identity. "
+        "Do not invent or alternate faces, glasses, hair, clothing, or accessories. If Audio "
+        "1 is provided, use only its voice identity and tone. Ignore its words completely; "
+        "speak only the exact words from Video 1 at the same timestamps. Change nothing else."
+    )
+
+    assert strict_generation_prompt(previous_default) == UGC_CLONE_V1.body
 
 
 def test_seedance_payload_matches_live_api_contract() -> None:

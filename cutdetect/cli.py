@@ -573,13 +573,6 @@ def _pipeline(args: argparse.Namespace) -> int:
             job = store.job(args.job_id)
             if job.consent_affirmed_at is None:
                 raise ValueError("job has no recorded reference-media permission affirmation")
-            if job.state not in {JobState.DRAFT, JobState.ESTIMATING, JobState.CONFIRMED} and (
-                job.max_credits != args.max_credits
-            ):
-                raise ValueError(
-                    f"running job ceiling is locked at {job.max_credits}; "
-                    f"received {args.max_credits}"
-                )
             logger = JsonlCallLogger(storage.path(f"jobs/{args.job_id}/runway_calls.jsonl"))
             gateway: GenerationGateway
             if is_workflow_route(job.route_id):

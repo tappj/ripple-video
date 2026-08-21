@@ -57,9 +57,8 @@ preview the exact request duration, output ratio, internal cuts, and estimated c
   --start 4 --end 12 --model seedance2 --dry-run
 ```
 
-When the estimate is acceptable, use a hard credit ceiling. The 8-second 720p example
-currently estimates 288 credits; the command refuses to upload or generate when the
-estimate exceeds the ceiling.
+The estimate is informational. Ripple no longer applies its own per-job credit ceiling;
+Runway account balance and billing limits still apply to every paid submission and retry.
 
 ```bash
 .venv311/bin/cutdetect pipeline gen-one source.mp4 face.jpg voice.wav \
@@ -109,9 +108,9 @@ the resumable SQLite job. It makes no API calls. Inspect it at any time with:
 .venv311/bin/cutdetect pipeline job-status JOB_ID
 ```
 
-Running is an explicit paid action. Inspect `estimated_credits` from `prepare-job`, then use
-that exact value as the initial ceiling. A higher ceiling is required if automatic retries
-should be allowed:
+Running is an explicit paid action. Inspect `estimated_credits` from `prepare-job` before
+submitting. Ripple does not impose an internal ceiling, so Runway account-level billing
+limits are the final spending control:
 
 ```bash
 .venv311/bin/cutdetect pipeline run-job JOB_ID --max-credits ESTIMATED_CREDITS
@@ -140,7 +139,7 @@ After generation reaches `REVIEW`, inspect the complete gate:
 `review-trim` uses the conservative silence-plus-low-motion suggestion unless an explicit
 `--end-frame` is supplied. It writes `output_final.mp4` while keeping `output_raw.mp4`
 unchanged. `review-approve-all` refuses to proceed if any clip is still running or failed.
-An edited regeneration is queued separately and requires an explicitly increased ceiling:
+An edited regeneration is queued and billed as a separate generation:
 
 ```bash
 .venv311/bin/cutdetect pipeline review-regenerate JOB_ID 0 \

@@ -3,13 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-import pytest
-
 from cutdetect.pipeline.capabilities import credit_cost
 from cutdetect.pipeline.grouping import AtomicSegment, group_atomic_segments
 from cutdetect.pipeline.orchestration import (
     DIRECT_API_ROUTE,
-    CreditLimitError,
     JobState,
     PhaseCStore,
     PhaseCWorker,
@@ -275,13 +272,13 @@ def test_failed_clip_retries_without_resubmitting_successes(tmp_path: Path) -> N
     store.close()
 
 
-def test_credit_ceiling_blocks_before_confirmation(tmp_path: Path) -> None:
+def test_confirmation_does_not_impose_an_internal_credit_ceiling(tmp_path: Path) -> None:
     store = PhaseCStore(tmp_path / "jobs.sqlite3")
     job_id = _create_job(store, tmp_path, 2)
 
-    ceiling = 2 * SEGMENT_CREDITS
-    with pytest.raises(CreditLimitError, match=f"at least {ceiling} credits"):
-        store.confirm(job_id, ceiling - 1)
+    confirmed = store.confirm(job_id, 0)
 
-    assert store.job(job_id).state == JobState.DRAFT
+    assert confirmed.state == JobState.CONFIRMED
+    assert confirmed.max_credits is None
+    assert store.has_submission_budget(job_id, 0) is True
     store.close()
