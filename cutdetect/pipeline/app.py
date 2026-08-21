@@ -23,10 +23,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from cutdetect.pipeline.capabilities import (
-    MODEL_CAPABILITIES,
-    ROUTER_RESOLUTIONS,
-)
+from cutdetect.pipeline.capabilities import MODEL_CAPABILITIES
 from cutdetect.pipeline.orchestration import (
     DIRECT_API_ROUTE,
     GenerationGateway,
@@ -46,13 +43,17 @@ from cutdetect.pipeline.runway_client import (
     RunwayDirectGateway,
     RunwayReferenceModel,
     RunwayRouterGateway,
-    model_router_config_id,
     router_config_id_from_route,
 )
 from cutdetect.pipeline.stitch import stitch_job
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import PROMPT_TEMPLATES
-from cutdetect.pipeline.workflow_client import TALKING_WORKFLOW_ROUTE, RunwayWorkflowGateway
+from cutdetect.pipeline.workflow_client import (
+    RunwayWorkflowGateway,
+    is_workflow_route,
+    workflow_spec_for_model,
+    workflow_spec_for_route,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,20 +68,25 @@ class PipelineStudioConfig:
 
 
 def _boot_payload() -> dict[str, object]:
+    labels = {
+        "seedance2": "Seedance 2.0",
+        "seedance2_5": "Seedance 2.5",
+        "hailuo3": "Hailuo 3.0",
+    }
+    workflows = {
+        model_id: workflow_spec_for_model(cast(RunwayReferenceModel, model_id))
+        for model_id in MODEL_CAPABILITIES
+    }
     return {
         "models": {
             model_id: {
-                "label": "Hailuo 3" if model_id == "hailuo3" else "Seedance 2",
+                "label": labels[model_id],
                 "ratios": ("9:16",),
-                "resolutions": ROUTER_RESOLUTIONS[model_id],
+                "resolutions": (workflows[model_id].resolution,),
                 "defaultRatio": "9:16",
-                "defaultResolution": "768P" if model_id == "hailuo3" else "720p",
-                "routeLabel": "Direct API" if model_id == "hailuo3" else "Model Router",
-                "routeDetail": (
-                    "hailuo3"
-                    if model_id == "hailuo3"
-                    else model_router_config_id(cast(RunwayReferenceModel, model_id))
-                ),
+                "defaultResolution": workflows[model_id].resolution,
+                "routeLabel": "Workflow API",
+                "routeDetail": workflows[model_id].workflow_id,
                 "minDuration": caps.min_duration_s,
                 "maxDuration": caps.max_duration_s,
                 "supportsInternalCuts": caps.supports_internal_cuts,
@@ -823,11 +829,12 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         storage.path(f"jobs/{job_id}/runway_calls.jsonl")
                     )
                     gateway: GenerationGateway
-                    if job.route_id == TALKING_WORKFLOW_ROUTE:
+                    if is_workflow_route(job.route_id):
                         gateway = RunwayWorkflowGateway(
                             api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
                             logger=gateway_logger,
                             storage=storage,
+                            spec=workflow_spec_for_route(job.route_id),
                         )
                     elif job.route_id == DIRECT_API_ROUTE:
                         gateway = RunwayDirectGateway(

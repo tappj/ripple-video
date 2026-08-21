@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from cutdetect.pipeline.capabilities import credit_cost
 from cutdetect.pipeline.grouping import AtomicSegment, group_atomic_segments
 from cutdetect.pipeline.orchestration import (
+    DIRECT_API_ROUTE,
     CreditLimitError,
     JobState,
     PhaseCStore,
@@ -16,6 +18,7 @@ from cutdetect.pipeline.orchestration import (
     format_sse_events,
 )
 from cutdetect.pipeline.runway_client import GenerationPoll, GenerationRequest
+from cutdetect.pipeline.workflow_client import SEEDANCE25_WORKFLOW
 
 SEGMENT_CREDITS = 102
 
@@ -73,6 +76,9 @@ def _create_job(
     *,
     job_id: str = "test-job",
     owner_device_hash: str | None = None,
+    model_id: str = "hailuo3",
+    route_id: str = DIRECT_API_ROUTE,
+    resolution: str = "768P",
 ) -> str:
     source = root / f"{job_id}-source.mp4"
     face = root / f"{job_id}-face.jpg"
@@ -91,7 +97,7 @@ def _create_job(
         for index in range(count)
     )
     grouping = group_atomic_segments(
-        segments, model_id="hailuo3", target_sec=5, max_group_segments=1
+        segments, model_id=model_id, target_sec=5, max_group_segments=1
     )
     inputs = []
     outputs = []
@@ -110,12 +116,36 @@ def _create_job(
         grouping=grouping,
         input_paths=inputs,
         output_keys=outputs,
-        model_id="hailuo3",
+        model_id=model_id,
         ratio="9:16",
-        resolution="768P",
+        resolution=resolution,
+        route_id=route_id,
         owner_device_hash=owner_device_hash,
     )
     return job_id
+
+
+def test_workflow_jobs_request_fixed_maximum_then_trim_to_source_duration(
+    tmp_path: Path,
+) -> None:
+    store = PhaseCStore(tmp_path / "jobs.sqlite3")
+    job_id = _create_job(
+        store,
+        tmp_path,
+        1,
+        model_id="seedance2_5",
+        route_id=SEEDANCE25_WORKFLOW.route_id,
+        resolution="720p",
+    )
+
+    job = store.job(job_id)
+    segment = store.segments(job_id)[0]
+    assert job.route_id == SEEDANCE25_WORKFLOW.route_id
+    assert segment.duration_sec == 5
+    assert segment.requested_duration_sec == 15
+    assert segment.estimated_credits == credit_cost(
+        "seedance2_5", 15, "720p", reference_video_duration_s=5
+    )
 
 
 def test_jobs_are_isolated_by_device_identity(tmp_path: Path) -> None:

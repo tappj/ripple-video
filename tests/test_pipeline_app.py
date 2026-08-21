@@ -35,7 +35,7 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "auto_run:true" in html
     assert "/api/jobs/${currentJob}/stitch" in html
     assert "model:model.value" in html
-    assert "Seedance 2 · Router" in html
+    assert "Seedance 2.0 · Workflow API" in html
     assert '<select id="model">' in html
     assert '<select id="ratio">' in html
     assert '<select id="resolution">' in html
@@ -44,8 +44,9 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert 'id="previewAudio"' in html
     assert "URL.createObjectURL(file)" in html
     assert "fresh task per clip" in html
-    assert "Hailuo 3" in html
-    assert "Direct API" in html
+    assert "Seedance 2.5" in html
+    assert "Hailuo 3.0" in html
+    assert "Workflow API" in html
     assert "Generation route" in html
     assert "Clone Video 1 exactly at the same duration" in html
     assert "Do not slow, extend, loop, or add footage" in html

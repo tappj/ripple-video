@@ -8,7 +8,7 @@ from cutdetect.pipeline.capabilities import (
     closest_seedance_ratio,
     credit_cost,
 )
-from cutdetect.pipeline.orchestration import DIRECT_API_ROUTE, generation_route
+from cutdetect.pipeline.orchestration import generation_route
 from cutdetect.pipeline.probe_suite import PROBE_CREDIT_CEILING
 from cutdetect.pipeline.runway_client import (
     DEFAULT_MODEL_ROUTER_CONFIG_IDS,
@@ -23,6 +23,11 @@ from cutdetect.pipeline.runway_client import (
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import UGC_CLONE_V1
+from cutdetect.pipeline.workflow_client import (
+    HAILUO3_WORKFLOW,
+    SEEDANCE2_WORKFLOW,
+    SEEDANCE25_WORKFLOW,
+)
 
 
 def test_seedance_capabilities_and_vertical_default() -> None:
@@ -119,9 +124,11 @@ def test_model_router_payload_is_model_agnostic_and_keeps_all_references() -> No
     assert model_router_route("seedance2") == (
         "router:" + DEFAULT_MODEL_ROUTER_CONFIG_IDS["seedance2"]
     )
-    assert generation_route("seedance2") == "router:ripple-seedance-2"
-    assert generation_route("hailuo3") == DIRECT_API_ROUTE
+    assert generation_route("seedance2") == SEEDANCE2_WORKFLOW.route_id
+    assert generation_route("seedance2_5") == SEEDANCE25_WORKFLOW.route_id
+    assert generation_route("hailuo3") == HAILUO3_WORKFLOW.route_id
     assert credit_cost("seedance2", 8, "720p") == 288
+    assert credit_cost("seedance2_5", 15, "720p", reference_video_duration_s=5) == 525
     assert credit_cost("seedance2", 8, "4K") == 1200
 
 

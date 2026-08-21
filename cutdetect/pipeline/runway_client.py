@@ -51,7 +51,7 @@ SeedanceRatio = Literal[
     "2880:3840",
     "2160:3840",
 ]
-RunwayReferenceModel = Literal["seedance2", "hailuo3"]
+RunwayReferenceModel = Literal["seedance2", "seedance2_5", "hailuo3"]
 GenerationStatus = Literal["PENDING", "THROTTLED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
 MODEL_ROUTER_ROUTE_PREFIX = "router:"
 DEFAULT_MODEL_ROUTER_CONFIG_IDS: dict[RunwayReferenceModel, str] = {

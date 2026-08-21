@@ -30,26 +30,23 @@ from cutdetect.pipeline.runway_client import (
     PipelineError,
     RouterConfigurationError,
     RunwayReferenceModel,
-    model_router_route,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import UGC_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
-    TALKING_WORKFLOW_ROUTE,
-    WORKFLOW_CREDITS_PER_RUN,
-    WORKFLOW_DURATION_SEC,
+    is_workflow_route,
+    workflow_spec_for_model,
+    workflow_spec_for_route,
 )
 
 DIRECT_API_ROUTE = "direct-reference-v1"
 
 
 def generation_route(model_id: str) -> str:
-    """Use the router catalog where available and a pinned direct model otherwise."""
-    if model_id == "seedance2":
-        return model_router_route("seedance2")
-    if model_id == "hailuo3":
-        return DIRECT_API_ROUTE
-    raise PipelineError(f"unsupported direct reference model: {model_id}")
+    """Use one independently published Workflow for every selectable model."""
+    if model_id not in MODEL_CAPABILITIES:
+        raise PipelineError(f"unsupported reference model: {model_id}")
+    return workflow_spec_for_model(cast(RunwayReferenceModel, model_id)).route_id
 
 
 class JobState(StrEnum):
@@ -380,14 +377,27 @@ class PhaseCStore:
         if model_id not in MODEL_CAPABILITIES:
             raise PipelineError(f"unsupported direct reference model: {model_id}")
         is_router_route = route_id.startswith("router:")
-        if route_id not in {DIRECT_API_ROUTE, TALKING_WORKFLOW_ROUTE} and not is_router_route:
+        workflow_spec = workflow_spec_for_route(route_id) if is_workflow_route(route_id) else None
+        if route_id != DIRECT_API_ROUTE and workflow_spec is None and not is_router_route:
             raise PipelineError(f"unsupported generation route: {route_id}")
-        if route_id == TALKING_WORKFLOW_ROUTE and model_id != "seedance2":
-            raise PipelineError("the published talking-video Workflow requires Seedance 2")
+        if workflow_spec is not None and model_id != workflow_spec.model:
+            raise PipelineError(
+                f"Workflow {workflow_spec.workflow_id} requires {workflow_spec.model}"
+            )
         caps = MODEL_CAPABILITIES[model_id]
-        allowed_ratios = ROUTER_ASPECT_RATIOS if is_router_route else caps.supported_ratios
+        allowed_ratios = (
+            ("9:16",)
+            if workflow_spec is not None
+            else ROUTER_ASPECT_RATIOS
+            if is_router_route
+            else caps.supported_ratios
+        )
         allowed_resolutions = (
-            ROUTER_RESOLUTIONS[model_id] if is_router_route else caps.supported_resolutions
+            (workflow_spec.resolution,)
+            if workflow_spec is not None
+            else ROUTER_RESOLUTIONS[model_id]
+            if is_router_route
+            else caps.supported_resolutions
         )
         if ratio not in allowed_ratios:
             raise PipelineError(f"unsupported {model_id} ratio: {ratio}")
@@ -398,8 +408,8 @@ class PhaseCStore:
         request_specs: list[tuple[int, int]] = []
         for group in grouping.groups:
             requested_duration = (
-                WORKFLOW_DURATION_SEC
-                if route_id == TALKING_WORKFLOW_ROUTE
+                workflow_spec.duration_sec
+                if workflow_spec is not None
                 else max(
                     math.ceil(caps.min_duration_s),
                     math.ceil(group.duration_sec - 1e-6),
@@ -410,15 +420,11 @@ class PhaseCStore:
                     f"group {group.index} requests {requested_duration}s outside the "
                     f"{caps.min_duration_s:g}-{caps.max_duration_s:g}s {model_id} range"
                 )
-            segment_credits = (
-                WORKFLOW_CREDITS_PER_RUN
-                if route_id == TALKING_WORKFLOW_ROUTE
-                else credit_cost(
-                    model_id,
-                    requested_duration,
-                    resolution or ratio,
-                    reference_video_duration_s=group.duration_sec,
-                )
+            segment_credits = credit_cost(
+                model_id,
+                requested_duration,
+                resolution or ratio,
+                reference_video_duration_s=group.duration_sec,
             )
             request_specs.append((requested_duration, segment_credits))
         created = _now()
@@ -1042,8 +1048,8 @@ class PhaseCWorker:
             refreshed_job = self.store.job(job.id)
             if not refreshed_job.target_face_uri:
                 raise PipelineError("face reference upload is unavailable")
-            if job.model_id not in {"seedance2", "hailuo3"}:
-                raise PipelineError(f"unsupported direct reference model: {job.model_id}")
+            if job.model_id not in MODEL_CAPABILITIES:
+                raise PipelineError(f"unsupported reference model: {job.model_id}")
             # Every cut receives a new Runway task with only its original source
             # section and current prompt. No generated output is ever fed into a
             # later request, including retries.
@@ -1122,7 +1128,7 @@ class PhaseCWorker:
         self.store.set_segment_state(segment.job_id, segment.index, SegmentState.DOWNLOADING)
         try:
             job = self.store.job(segment.job_id)
-            if job.route_id == TALKING_WORKFLOW_ROUTE:
+            if is_workflow_route(job.route_id):
                 output_key = Path(segment.output_key)
                 provider_key = str(output_key.with_name(f"{output_key.stem}_provider.mp4"))
                 provider_path = self.gateway.download(result.output_urls[0], provider_key)

@@ -561,8 +561,9 @@ def _pipeline(args: argparse.Namespace) -> int:
         )
         from cutdetect.pipeline.storage import LocalDiskStorage
         from cutdetect.pipeline.workflow_client import (
-            TALKING_WORKFLOW_ROUTE,
             RunwayWorkflowGateway,
+            is_workflow_route,
+            workflow_spec_for_route,
         )
 
         root = args.output_root.expanduser().resolve()
@@ -581,11 +582,12 @@ def _pipeline(args: argparse.Namespace) -> int:
                 )
             logger = JsonlCallLogger(storage.path(f"jobs/{args.job_id}/runway_calls.jsonl"))
             gateway: GenerationGateway
-            if job.route_id == TALKING_WORKFLOW_ROUTE:
+            if is_workflow_route(job.route_id):
                 gateway = RunwayWorkflowGateway(
                     api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
                     logger=logger,
                     storage=storage,
+                    spec=workflow_spec_for_route(job.route_id),
                 )
             elif job.route_id == DIRECT_API_ROUTE:
                 gateway = RunwayDirectGateway(

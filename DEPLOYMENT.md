@@ -20,20 +20,17 @@ cache, and virtual environment.
 
 ## One-time Runway setup
 
-Create this single-model router in the Runway developer organization before expecting Seedance
-generations to complete. Hailuo 3 uses Runway's direct API because it is not currently offered in
-the Model Router catalog.
+Publish one dedicated Runway Workflow for each selectable model. Each graph accepts the source
+video, target face, optional target voice, and prompt, then exposes its generated video output.
 
-| UI choice | Router name | Config ID | Allow-listed model |
-|---|---|---|---|
-| Seedance 2 | `Ripple — Seedance 2` | `ripple-seedance-2` | `seedance2` only |
+| UI choice | Published Workflow ID |
+|---|---|
+| Seedance 2.0 | `f28115cf-16bd-453f-9f3c-e766982951a4` |
+| Seedance 2.5 | `4af4fdf6-a371-4a73-b02d-fdbf116186d5` |
+| Hailuo 3.0 | `9172f9ee-e4e9-4a25-92e1-29779d698556` |
 
-Use this description:
-
-- `Ripple production video routing pinned to Seedance 2 for independent video + face + voice recreations.`
-
-Choose Quality optimization and leave the router-wide maximum video credits unset. Full details
-are in [RIPPLE_MODEL_ROUTER_MIGRATION.md](RIPPLE_MODEL_ROUTER_MIGRATION.md).
+All three graphs use 9:16 output and a 15-second maximum. Ripple overrides the exposed prompt for
+every independent clip and trims each returned video to the source clip's exact duration.
 
 ## Account-side launch steps
 
@@ -71,7 +68,9 @@ are in place.
 | Variable | Default in container | Purpose |
 |---|---|---|
 | `RUNWAYML_API_SECRET` | none | Server-only Runway developer API credential |
-| `RUNWAY_SEEDANCE_ROUTER_CONFIG_ID` | `ripple-seedance-2` | Seedance router config |
+| `RUNWAY_SEEDANCE2_WORKFLOW_ID` | published ID above | Seedance 2.0 Workflow |
+| `RUNWAY_SEEDANCE25_WORKFLOW_ID` | published ID above | Seedance 2.5 Workflow |
+| `RUNWAY_HAILUO3_WORKFLOW_ID` | published ID above | Hailuo 3.0 Workflow |
 | `RIPPLE_ACCESS_PASSWORD` | none | Optional shared beta password |
 | `RIPPLE_MAX_UPLOAD_MIB` | `256` | Maximum size of each uploaded asset |
 | `RIPPLE_DATA_DIR` | `/data/ripple` | Jobs, SQLite, uploads, and output media |

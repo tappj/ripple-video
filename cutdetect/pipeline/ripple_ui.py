@@ -33,7 +33,7 @@ def render_ripple_html(boot: dict[str, object]) -> str:
 <div class="app">
   <header class="topbar">
     <div class="wordmark"><span class="mark"></span>ripple</div>
-    <div class="top-actions"><span class="model-chip" id="modelChip">Seedance 2 · Router</span><span class="online"><i></i> Local</span></div>
+    <div class="top-actions"><span class="model-chip" id="modelChip">Seedance 2.0 · Workflow API</span><span class="online"><i></i> Local</span></div>
   </header>
   <main class="shell">
     <aside class="composer">
