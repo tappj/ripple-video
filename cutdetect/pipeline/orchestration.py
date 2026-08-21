@@ -22,7 +22,12 @@ from cutdetect.pipeline.capabilities import (
     ROUTER_RESOLUTIONS,
     credit_cost,
 )
-from cutdetect.pipeline.grouping import GroupingPlan, plan_from_predictions
+from cutdetect.pipeline.grouping import (
+    GroupingPlan,
+    plan_from_predictions,
+    requires_cut_partition,
+    whole_video_plan,
+)
 from cutdetect.pipeline.media import preserve_source_audio, trim_generated_duration
 from cutdetect.pipeline.runway_client import (
     GenerationPoll,
@@ -1287,7 +1292,6 @@ def prepare_phase_c_job(
     face = _validate_file(image, "target face")
     voice = _validate_file(audio, "target voice") if audio is not None else None
     product_image = _validate_file(product, "target product") if product is not None else None
-    prediction_path = _validate_file(predictions, "predictions")
     source_probe = probe_video(source)
     if voice is None and not source_probe.has_audio:
         raise PipelineError("the source video has no audio; add an optional voice reference")
@@ -1300,15 +1304,26 @@ def prepare_phase_c_job(
     selected_ratio = ratio or "9:16"
     selected_resolution = resolution or ("768P" if model_id == "hailuo3" else "720p")
     selected_route_id = route_id or generation_route(model_id)
-    grouping = plan_from_predictions(
-        prediction_path,
-        model_id=model_id,
-        target_sec=target_sec,
-        min_group_sec=min_group_sec,
-        max_group_sec=max_group_sec,
-        max_group_segments=max_group_segments,
-        source_video=source,
-    )
+    if requires_cut_partition(source_probe.duration_sec, limit_sec=max_group_sec):
+        prediction_path = _validate_file(predictions, "predictions")
+        grouping = plan_from_predictions(
+            prediction_path,
+            model_id=model_id,
+            target_sec=target_sec,
+            min_group_sec=min_group_sec,
+            max_group_sec=max_group_sec,
+            max_group_segments=max_group_segments,
+            source_video=source,
+        )
+    else:
+        grouping = whole_video_plan(
+            model_id=model_id,
+            frame_count=source_probe.frame_count,
+            duration_sec=source_probe.duration_sec,
+            min_group_sec=min_group_sec,
+            max_group_sec=max_group_sec,
+            max_group_segments=max_group_segments,
+        )
     selected_job_id = job_id or uuid.uuid4().hex
     storage = LocalDiskStorage(output_root)
     job_key = f"jobs/{selected_job_id}"

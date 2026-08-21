@@ -102,8 +102,10 @@ Prepare a Phase C job locally before spending credits:
   --predictions eval/phase3/predictions.json --consent
 ```
 
-Preparation exports the exact `(4, 10]` second groups, writes the grouping manifest, and creates
-the resumable SQLite job. It makes no API calls. Inspect it at any time with:
+Sources at or below 15 seconds bypass cut detection and become one complete generation request.
+Only sources above 15 seconds use cut-aware grouping and audio-pause splitting. Preparation writes
+the grouping manifest and creates the resumable SQLite job without making API calls. Inspect it at
+any time with:
 
 ```bash
 .venv311/bin/cutdetect pipeline job-status JOB_ID

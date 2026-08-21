@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, unquote, urlparse
 
+from cutdetect.ingest import probe_video
 from cutdetect.pipeline.capabilities import MODEL_CAPABILITIES
+from cutdetect.pipeline.grouping import requires_cut_partition
 from cutdetect.pipeline.orchestration import (
     DIRECT_API_ROUTE,
     GenerationGateway,
@@ -687,8 +689,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 raise PipelineError("this session is already being prepared")
             state.update(
                 status="ANALYZING",
-                stage="Detecting hard cuts…",
-                message="Reading visual and audio boundary evidence.",
+                stage="Reading source video…",
+                message="Checking whether this video needs clip partitioning.",
                 request={
                     "experience": experience,
                     "product_route": product_route if experience == "product" else None,
@@ -758,7 +760,9 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             acquired = True
             session_dir = self.server.root / "staging" / session_id
             predictions = session_dir / "detection" / "predictions.json"
-            if not predictions.is_file():
+            source_duration = probe_video(video).duration_sec
+            needs_partition = requires_cut_partition(source_duration)
+            if needs_partition and not predictions.is_file():
                 self._update_session(
                     session_id,
                     stage="Detecting hard cuts…",
@@ -770,11 +774,19 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     self.server.cache_dir,
                     timeout_sec=self.server.config.detection_timeout_sec,
                 )
+            elif not needs_partition:
+                self._update_session(
+                    session_id,
+                    stage="Using the full source video…",
+                    message="15 seconds or less: generating once without cut detection.",
+                )
             self._update_session(
                 session_id,
                 stage="Planning generation clips…",
                 message=(
-                    "Balancing short sections and selecting audio pauses for long shots."
+                    "Using one complete clip."
+                    if not needs_partition
+                    else "Balancing short sections and selecting audio pauses for long shots."
                 ),
             )
 

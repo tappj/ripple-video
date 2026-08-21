@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from cutdetect.pipeline.grouping import group_atomic_segments, load_atomic_segments
+from cutdetect.pipeline.grouping import (
+    group_atomic_segments,
+    load_atomic_segments,
+    requires_cut_partition,
+    whole_video_plan,
+)
 from cutdetect.pipeline.runway_client import PipelineError
 
 
@@ -29,6 +34,26 @@ def _write_predictions(path: Path, durations: list[float]) -> Path:
         start_sec = end_sec
     path.write_text(json.dumps({"segments": segments}), encoding="utf-8")
     return path
+
+
+def test_video_at_or_below_fifteen_seconds_uses_one_uncut_generation() -> None:
+    assert requires_cut_partition(15.0) is False
+    assert requires_cut_partition(15.000001) is False
+    assert requires_cut_partition(15.001) is True
+
+    plan = whole_video_plan(model_id="seedance2", frame_count=450, duration_sec=15.0)
+
+    assert plan.generation_strategy == "whole_source_under_generation_limit"
+    assert plan.total_generation_requests == 1
+    assert len(plan.groups) == 1
+    assert plan.groups[0].start_frame == 0
+    assert plan.groups[0].end_frame == 450
+    assert plan.groups[0].hard_cut_offsets_sec == ()
+
+
+def test_whole_video_plan_rejects_only_sources_above_fifteen_seconds() -> None:
+    with pytest.raises(PipelineError, match="exceeds the 15s single-generation limit"):
+        whole_video_plan(model_id="seedance2", frame_count=451, duration_sec=15.01)
 
 
 def test_groups_only_complete_segments_and_retains_every_hard_cut(tmp_path: Path) -> None:

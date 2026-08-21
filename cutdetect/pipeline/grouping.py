@@ -95,6 +95,71 @@ class GroupingPlan:
         }
 
 
+def requires_cut_partition(duration_sec: float, *, limit_sec: float = 15.0) -> bool:
+    """Return whether a source must be analyzed and partitioned for generation."""
+    if duration_sec <= 0 or limit_sec <= 0:
+        raise PipelineError("video duration and generation limit must be positive")
+    return duration_sec > limit_sec + 1e-6
+
+
+def whole_video_plan(
+    *,
+    model_id: str,
+    frame_count: int,
+    duration_sec: float,
+    min_group_sec: float = 4.0,
+    max_group_sec: float = 15.0,
+    max_group_segments: int = 4,
+    group_cost_bias: float = 4.0,
+) -> GroupingPlan:
+    """Create one generation unit for a source that already fits the model limit."""
+    if model_id not in MODEL_CAPABILITIES:
+        raise PipelineError(f"unsupported model: {model_id}")
+    if frame_count <= 0 or duration_sec <= 0:
+        raise PipelineError("whole-video generation requires non-empty media")
+    if requires_cut_partition(duration_sec, limit_sec=max_group_sec):
+        raise PipelineError(
+            f"{duration_sec:g}s source exceeds the {max_group_sec:g}s single-generation limit"
+        )
+    segment = AtomicSegment(
+        index=0,
+        start_frame=0,
+        end_frame=frame_count,
+        start_sec=0.0,
+        end_sec=duration_sec,
+        duration_sec=duration_sec,
+        end_boundary_kind="source_end",
+    )
+    group = SegmentGroup(
+        index=0,
+        segment_indices=(0,),
+        start_frame=0,
+        end_frame=frame_count,
+        start_sec=0.0,
+        end_sec=duration_sec,
+        duration_sec=duration_sec,
+        hard_cut_frames=(),
+        hard_cut_times_sec=(),
+        hard_cut_offsets_sec=(),
+        source_segment_count=1,
+        request_count=1,
+    )
+    return GroupingPlan(
+        model_id=model_id,
+        target_sec=min(max(duration_sec, min_group_sec), max_group_sec),
+        min_group_sec=min_group_sec,
+        max_group_sec=max_group_sec,
+        max_group_segments=max_group_segments,
+        group_cost_bias=group_cost_bias,
+        generation_strategy="whole_source_under_generation_limit",
+        preserve_hard_boundaries=True,
+        total_groups=1,
+        total_generation_requests=1,
+        segments=(segment,),
+        groups=(group,),
+    )
+
+
 def automatic_target(duration_sec: float) -> float:
     """Return the Phase B review-batch duration target."""
     if duration_sec < 30:
