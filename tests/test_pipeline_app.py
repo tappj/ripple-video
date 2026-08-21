@@ -47,7 +47,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Hailuo 3" in html
     assert "Direct API" in html
     assert "Generation route" in html
-    assert "Clone Video 1 exactly at the same length" in html
+    assert "Clone Video 1 exactly at the same duration" in html
+    assert "Do not slow, extend, loop, or add footage" in html
     assert "background audio unchanged" in html
     assert "replace only the speaking voice" in html
     assert "woman from Image 1" not in html

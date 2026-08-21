@@ -25,7 +25,6 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from cutdetect.pipeline.capabilities import (
     MODEL_CAPABILITIES,
-    ROUTER_ASPECT_RATIOS,
     ROUTER_RESOLUTIONS,
 )
 from cutdetect.pipeline.orchestration import (
@@ -72,7 +71,7 @@ def _boot_payload() -> dict[str, object]:
         "models": {
             model_id: {
                 "label": "Hailuo 3" if model_id == "hailuo3" else "Seedance 2",
-                "ratios": ROUTER_ASPECT_RATIOS,
+                "ratios": ("9:16",),
                 "resolutions": ROUTER_RESOLUTIONS[model_id],
                 "defaultRatio": "9:16",
                 "defaultResolution": "768P" if model_id == "hailuo3" else "720p",
@@ -639,7 +638,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 message="Reading visual and audio boundary evidence.",
                 request={
                     "model": str(body.get("model", "seedance2")),
-                    "ratio": str(body.get("ratio")) if body.get("ratio") else None,
+                    "ratio": "9:16",
                     "resolution": (
                         str(body.get("resolution")) if body.get("resolution") else None
                     ),
