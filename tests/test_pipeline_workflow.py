@@ -7,6 +7,7 @@ from cutdetect.pipeline.runway_client import GenerationRequest, JsonlCallLogger,
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import UGC_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
+    PRODUCT_CLONE_WORKFLOW,
     PROMPT_NODE_ID,
     REFERENCE_VIDEO_NODE_ID,
     SEEDANCE25_WORKFLOW,
@@ -85,3 +86,51 @@ def test_workflow_gateway_rejects_a_request_with_the_wrong_fixed_duration(
 
     with pytest.raises(PipelineError, match="requires a 15s request"):
         gateway.submit(request)
+
+
+def test_product_workflow_maps_its_distinct_avatar_product_and_prompt_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeWorkflows:
+        def run(self, workflow_id: str, *, node_outputs: object) -> SimpleNamespace:
+            calls.append((workflow_id, node_outputs))
+            return SimpleNamespace(id="product-invocation")
+
+    class FakeRunway:
+        def __init__(self, **_kwargs: object) -> None:
+            self.workflows = FakeWorkflows()
+
+    monkeypatch.setattr("cutdetect.pipeline.workflow_client.RunwayML", FakeRunway)
+    client = RunwayWorkflowClient(
+        api_key="key_test",
+        logger=JsonlCallLogger(tmp_path / "calls.jsonl"),
+        storage=LocalDiskStorage(tmp_path),
+        spec=PRODUCT_CLONE_WORKFLOW,
+    )
+
+    invocation_id = client.submit(
+        reference_video_uri="runway://video",
+        target_face_uri="runway://avatar",
+        target_voice_uri=None,
+        target_product_uri="runway://product",
+        prompt="product prompt",
+    )
+
+    assert invocation_id == "product-invocation"
+    workflow_id, raw_outputs = calls[0]
+    assert workflow_id == PRODUCT_CLONE_WORKFLOW.workflow_id
+    assert isinstance(raw_outputs, dict)
+    assert raw_outputs[PRODUCT_CLONE_WORKFLOW.reference_video_node_id]["video"]["uri"] == (
+        "runway://video"
+    )
+    assert raw_outputs[PRODUCT_CLONE_WORKFLOW.target_face_node_id]["image"]["uri"] == (
+        "runway://avatar"
+    )
+    product_node_id = PRODUCT_CLONE_WORKFLOW.target_product_node_id
+    assert product_node_id is not None
+    assert raw_outputs[product_node_id]["image"]["uri"] == "runway://product"
+    assert raw_outputs[PRODUCT_CLONE_WORKFLOW.prompt_node_id]["prompt"]["value"] == (
+        "product prompt"
+    )

@@ -127,6 +127,7 @@ class GenerationRequest:
     reference_video_duration_sec: float
     model: RunwayReferenceModel = "seedance2"
     resolution: str | None = None
+    reference_product: str | None = None
 
     @property
     def estimated_credits(self) -> int:
@@ -145,7 +146,11 @@ class GenerationRequest:
             "duration": self.duration,
             "promptText": self.prompt_text,
             "ratio": self.ratio,
-            "references": [{"uri": self.reference_image}],
+            "references": [
+                {"uri": uri}
+                for uri in (self.reference_image, self.reference_product)
+                if uri is not None
+            ],
             "referenceVideos": [{"type": "video", "uri": self.reference_video}],
         }
         if self.model == "seedance2":
@@ -173,7 +178,11 @@ class GenerationRequest:
             "resolution": resolution,
             "duration": self.duration,
             "audio": self.reference_audio is not None,
-            "reference_images": [{"uri": self.reference_image, "role": "reference"}],
+            "reference_images": [
+                {"uri": uri, "role": "reference"}
+                for uri in (self.reference_image, self.reference_product)
+                if uri is not None
+            ],
             "reference_videos": [{"uri": self.reference_video, "role": "source"}],
         }
         if self.reference_audio is not None:

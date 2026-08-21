@@ -42,6 +42,7 @@ RUNWAYML_API_SECRET=
 RUNWAY_SEEDANCE2_WORKFLOW_ID=f28115cf-16bd-453f-9f3c-e766982951a4
 RUNWAY_SEEDANCE25_WORKFLOW_ID=4af4fdf6-a371-4a73-b02d-fdbf116186d5
 RUNWAY_HAILUO3_WORKFLOW_ID=9172f9ee-e4e9-4a25-92e1-29779d698556
+RUNWAY_PRODUCT_CLONE_WORKFLOW_ID=0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0
 ```
 
 Never commit `.env`, paste keys into documentation, or send them through chat. Exported
@@ -124,6 +125,12 @@ submits every eligible clip before polling, saves outputs immediately, and recor
 in SQLite. Re-running the same command resumes existing invocation IDs instead of rebilling completed
 clips. Use `--once` to advance one worker cycle and exit. Older Workflow/direct/router jobs remain
 resumable.
+
+The **UGC product test** tab provides a controlled two-route comparison. It sends the same
+source cut, avatar image, product image, and prompt either to Seedance 2.0 through the
+`ripple-seedance-2` Model Router or to Hailuo 3 through the published product-clone Workflow.
+Each selection creates fresh, independent tasks; a result from one route is never used as
+context for the other.
 
 ## Review gate
 

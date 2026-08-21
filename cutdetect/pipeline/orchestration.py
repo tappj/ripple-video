@@ -32,7 +32,7 @@ from cutdetect.pipeline.runway_client import (
     RunwayReferenceModel,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import UGC_CLONE_V1, strict_generation_prompt
+from cutdetect.pipeline.templates import UGC_CLONE_V1, generation_prompt
 from cutdetect.pipeline.workflow_client import (
     is_workflow_route,
     workflow_spec_for_model,
@@ -112,6 +112,7 @@ class JobRecord:
     source_path: Path
     target_face_path: Path
     target_voice_path: Path | None
+    target_product_path: Path | None
     prompt: str
     prompt_template_id: str
     prompt_template_version: int
@@ -128,6 +129,7 @@ class JobRecord:
     completed_at: datetime | None
     target_face_uri: str | None
     target_voice_uri: str | None
+    target_product_uri: str | None
     references_uploaded_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -233,6 +235,7 @@ class PhaseCStore:
                 source_path TEXT NOT NULL,
                 target_face_path TEXT NOT NULL,
                 target_voice_path TEXT NOT NULL,
+                target_product_path TEXT,
                 prompt TEXT NOT NULL,
                 prompt_template_id TEXT NOT NULL DEFAULT 'ugc_clone_v1',
                 prompt_template_version INTEGER NOT NULL DEFAULT 1,
@@ -249,6 +252,7 @@ class PhaseCStore:
                 completed_at TEXT,
                 target_face_uri TEXT,
                 target_voice_uri TEXT,
+                target_product_uri TEXT,
                 references_uploaded_at TEXT,
                 owner_device_hash TEXT,
                 created_at TEXT NOT NULL,
@@ -310,6 +314,8 @@ class PhaseCStore:
         self._ensure_column("jobs", "qc_output_key", "TEXT")
         self._ensure_column("jobs", "completed_at", "TEXT")
         self._ensure_column("jobs", "owner_device_hash", "TEXT")
+        self._ensure_column("jobs", "target_product_path", "TEXT")
+        self._ensure_column("jobs", "target_product_uri", "TEXT")
         self._ensure_column("segments", "requested_duration_sec", "INTEGER NOT NULL DEFAULT 10")
         self._ensure_column("segments", "estimated_credits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("segments", "hard_cut_offsets_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -357,6 +363,7 @@ class PhaseCStore:
         source_path: Path,
         target_face_path: Path,
         target_voice_path: Path | None,
+        target_product_path: Path | None = None,
         prompt: str,
         grouping: GroupingPlan,
         input_paths: Sequence[Path],
@@ -384,6 +391,12 @@ class PhaseCStore:
             raise PipelineError(
                 f"Workflow {workflow_spec.workflow_id} requires {workflow_spec.model}"
             )
+        if (
+            workflow_spec is not None
+            and workflow_spec.target_product_node_id is not None
+            and target_product_path is None
+        ):
+            raise PipelineError("the product clone Workflow requires a product image")
         caps = MODEL_CAPABILITIES[model_id]
         allowed_ratios = (
             ("9:16",)
@@ -434,10 +447,11 @@ class PhaseCStore:
                 """
                 INSERT INTO jobs(
                     id, state, source_path, target_face_path, target_voice_path,
+                    target_product_path,
                     prompt, prompt_template_id, prompt_template_version, consent_affirmed_at,
                     workflow_id, model_id, ratio, resolution,
                     estimated_credits, owner_device_hash, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -445,6 +459,7 @@ class PhaseCStore:
                     str(source_path),
                     str(target_face_path),
                     str(target_voice_path) if target_voice_path is not None else "",
+                    str(target_product_path) if target_product_path is not None else None,
                     prompt,
                     prompt_template_id,
                     prompt_template_version,
@@ -519,6 +534,9 @@ class PhaseCStore:
             target_voice_path=(
                 Path(str(row["target_voice_path"])) if str(row["target_voice_path"]) else None
             ),
+            target_product_path=(
+                Path(str(row["target_product_path"])) if row["target_product_path"] else None
+            ),
             prompt=str(row["prompt"]),
             prompt_template_id=str(row["prompt_template_id"]),
             prompt_template_version=int(row["prompt_template_version"]),
@@ -535,6 +553,7 @@ class PhaseCStore:
             completed_at=_datetime(cast(str | None, row["completed_at"])),
             target_face_uri=cast(str | None, row["target_face_uri"]),
             target_voice_uri=cast(str | None, row["target_voice_uri"]),
+            target_product_uri=cast(str | None, row["target_product_uri"]),
             references_uploaded_at=_datetime(cast(str | None, row["references_uploaded_at"])),
             created_at=cast(datetime, _datetime(str(row["created_at"]))),
             updated_at=cast(datetime, _datetime(str(row["updated_at"]))),
@@ -760,17 +779,19 @@ class PhaseCStore:
         *,
         target_face_uri: str,
         target_voice_uri: str | None,
+        target_product_uri: str | None,
         uploaded_at: datetime,
     ) -> None:
         with self._connection:
             self._connection.execute(
                 """
-                UPDATE jobs SET target_face_uri = ?, target_voice_uri = ?,
+                UPDATE jobs SET target_face_uri = ?, target_voice_uri = ?, target_product_uri = ?,
                     references_uploaded_at = ?, updated_at = ? WHERE id = ?
                 """,
                 (
                     target_face_uri,
                     target_voice_uri,
+                    target_product_uri,
                     _timestamp(uploaded_at),
                     _timestamp(uploaded_at),
                     job_id,
@@ -951,6 +972,7 @@ class PhaseCWorker:
         if (
             job.target_face_uri
             and (job.target_voice_path is None or job.target_voice_uri)
+            and (job.target_product_path is None or job.target_product_uri)
             and _fresh(job.references_uploaded_at, now=current)
         ):
             return job
@@ -960,10 +982,16 @@ class PhaseCWorker:
             if job.target_voice_path is not None
             else None
         )
+        product_uri = (
+            self.gateway.upload(job.target_product_path, role="target_product")
+            if job.target_product_path is not None
+            else None
+        )
         self.store.update_references(
             job.id,
             target_face_uri=face_uri,
             target_voice_uri=voice_uri,
+            target_product_uri=product_uri,
             uploaded_at=current,
         )
         return self.store.job(job.id)
@@ -1028,7 +1056,10 @@ class PhaseCWorker:
                 reference_video=source_uri,
                 reference_image=refreshed_job.target_face_uri,
                 reference_audio=refreshed_job.target_voice_uri,
-                prompt_text=strict_generation_prompt(segment.prompt_override or job.prompt),
+                reference_product=refreshed_job.target_product_uri,
+                prompt_text=generation_prompt(
+                    job.prompt_template_id, segment.prompt_override or job.prompt
+                ),
                 duration=segment.requested_duration_sec,
                 ratio=job.ratio,
                 reference_video_duration_sec=segment.duration_sec,
@@ -1231,6 +1262,7 @@ def prepare_phase_c_job(
     image: str | Path,
     audio: str | Path | None,
     *,
+    product: str | Path | None = None,
     predictions: str | Path = "eval/phase3/predictions.json",
     output_root: str | Path = ".cutdetect/pipeline_phase_c",
     cache_dir: str | Path | None = ".cutdetect/cache",
@@ -1241,6 +1273,7 @@ def prepare_phase_c_job(
     model_id: str = "seedance2",
     ratio: str | None = None,
     resolution: str | None = None,
+    route_id: str | None = None,
     prompt: str = UGC_CLONE_V1.body,
     prompt_template_id: str = UGC_CLONE_V1.id,
     prompt_template_version: int = UGC_CLONE_V1.version,
@@ -1253,6 +1286,7 @@ def prepare_phase_c_job(
     source = _validate_file(video, "source video")
     face = _validate_file(image, "target face")
     voice = _validate_file(audio, "target voice") if audio is not None else None
+    product_image = _validate_file(product, "target product") if product is not None else None
     prediction_path = _validate_file(predictions, "predictions")
     source_probe = probe_video(source)
     if voice is None and not source_probe.has_audio:
@@ -1265,7 +1299,7 @@ def prepare_phase_c_job(
         raise PipelineError(f"unsupported direct reference model: {model_id}")
     selected_ratio = ratio or "9:16"
     selected_resolution = resolution or ("768P" if model_id == "hailuo3" else "720p")
-    route_id = generation_route(model_id)
+    selected_route_id = route_id or generation_route(model_id)
     grouping = plan_from_predictions(
         prediction_path,
         model_id=model_id,
@@ -1298,6 +1332,14 @@ def prepare_phase_c_job(
         if voice is not None
         else None
     )
+    stored_product = (
+        storage.copy_in(
+            product_image,
+            f"{job_key}/refs/target_product{product_image.suffix.lower()}",
+        )
+        if product_image is not None
+        else None
+    )
     grouping_path = storage.write_json(f"{job_key}/grouping.json", grouping.to_dict())
     database_path = storage.path("orchestration.sqlite3")
     with PhaseCStore(database_path) as store:
@@ -1306,6 +1348,7 @@ def prepare_phase_c_job(
             source_path=source,
             target_face_path=stored_face,
             target_voice_path=stored_voice,
+            target_product_path=stored_product,
             prompt=prompt,
             grouping=grouping,
             input_paths=input_paths,
@@ -1313,7 +1356,7 @@ def prepare_phase_c_job(
             model_id=model_id,
             ratio=selected_ratio,
             resolution=selected_resolution,
-            route_id=route_id,
+            route_id=selected_route_id,
             prompt_template_id=prompt_template_id,
             prompt_template_version=prompt_template_version,
             consent_affirmed=consent_affirmed,
@@ -1333,6 +1376,7 @@ def prepare_phase_c_job(
         "consent_affirmed_at": _timestamp(job.consent_affirmed_at),
         "estimated_credits": job.estimated_credits,
         "audio_mode": "reference" if stored_voice else "source",
+        "product_mode": "replacement" if stored_product else None,
         "grouping": str(grouping_path),
         "database": str(database_path),
     }
@@ -1379,6 +1423,8 @@ def job_status(store: PhaseCStore, job_id: str) -> dict[str, object]:
         "max_credits": job.max_credits,
         "submitted_credits": job.submitted_credits,
         "audio_mode": "reference" if job.target_voice_path else "source",
+        "product_mode": "replacement" if job.target_product_path else None,
+        "prompt": job.prompt,
         "final_output_key": job.final_output_key,
         "qc_output_key": job.qc_output_key,
         "completed_at": _timestamp(job.completed_at),

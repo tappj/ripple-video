@@ -29,6 +29,17 @@ UGC_CLONE_V1 = PromptTemplate(
     editable_by_user=True,
 )
 
+UGC_PRODUCT_CLONE_V1 = PromptTemplate(
+    id="ugc_product_clone_v1",
+    label="UGC Product Clone",
+    version=1,
+    body=(
+        "Keep Video 1 exactly the same, but switch the avatar to Image 1 and make them "
+        "hold the product from Image 2."
+    ),
+    editable_by_user=True,
+)
+
 _SUPERSEDED_DEFAULT_PROMPTS = {
     (
         "Recreate Video 1 exactly at its original duration. Video 1 is the only source for "
@@ -40,7 +51,10 @@ _SUPERSEDED_DEFAULT_PROMPTS = {
     )
 }
 
-PROMPT_TEMPLATES: dict[str, PromptTemplate] = {UGC_CLONE_V1.id: UGC_CLONE_V1}
+PROMPT_TEMPLATES: dict[str, PromptTemplate] = {
+    UGC_CLONE_V1.id: UGC_CLONE_V1,
+    UGC_PRODUCT_CLONE_V1.id: UGC_PRODUCT_CLONE_V1,
+}
 
 
 def strict_generation_prompt(direction: str) -> str:
@@ -49,3 +63,15 @@ def strict_generation_prompt(direction: str) -> str:
     if not cleaned or cleaned == UGC_CLONE_V1.body or cleaned in _SUPERSEDED_DEFAULT_PROMPTS:
         return UGC_CLONE_V1.body
     return f"{UGC_CLONE_V1.body}\nAdditional direction: {cleaned}"
+
+
+def generation_prompt(template_id: str, direction: str) -> str:
+    """Apply the mandatory base prompt for the selected Ripple experience."""
+    if template_id == UGC_CLONE_V1.id:
+        return strict_generation_prompt(direction)
+    if template_id != UGC_PRODUCT_CLONE_V1.id:
+        raise ValueError(f"unknown prompt template: {template_id}")
+    cleaned = direction.strip()
+    if not cleaned or cleaned == UGC_PRODUCT_CLONE_V1.body:
+        return UGC_PRODUCT_CLONE_V1.body
+    return f"{UGC_PRODUCT_CLONE_V1.body}\nAdditional direction: {cleaned}"

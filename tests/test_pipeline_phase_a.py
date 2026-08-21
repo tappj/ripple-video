@@ -153,6 +153,27 @@ def test_model_router_payload_is_model_agnostic_and_keeps_all_references() -> No
     assert credit_cost("seedance2", 8, "4K") == 1200
 
 
+def test_product_comparison_router_sends_avatar_and_product_in_order() -> None:
+    request = GenerationRequest(
+        reference_video="runway://video",
+        reference_image="runway://avatar",
+        reference_audio=None,
+        reference_product="runway://product",
+        prompt_text="Keep the source and replace the avatar and product.",
+        duration=10,
+        ratio="9:16",
+        reference_video_duration_sec=10,
+        model="seedance2",
+        resolution="720p",
+    )
+
+    assert request.router_payload()["reference_images"] == [
+        {"uri": "runway://avatar", "role": "reference"},
+        {"uri": "runway://product", "role": "reference"},
+    ]
+    assert request.router_payload()["audio"] is False
+
+
 def test_router_gateway_validates_dry_runs_then_starts_a_fresh_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

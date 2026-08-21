@@ -37,6 +37,11 @@ class WorkflowSpec:
     output_node_id: str
     duration_sec: int
     resolution: str
+    reference_video_node_id: str = REFERENCE_VIDEO_NODE_ID
+    target_face_node_id: str = TARGET_FACE_NODE_ID
+    prompt_node_id: str = PROMPT_NODE_ID
+    target_voice_node_id: str | None = TARGET_VOICE_NODE_ID
+    target_product_node_id: str | None = None
 
     @property
     def route_id(self) -> str:
@@ -67,6 +72,17 @@ HAILUO3_WORKFLOW = WorkflowSpec(
     duration_sec=15,
     resolution="768P",
 )
+PRODUCT_CLONE_WORKFLOW = WorkflowSpec(
+    model="hailuo3",
+    workflow_id=os.environ.get("RUNWAY_PRODUCT_CLONE_WORKFLOW_ID")
+    or "0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0",
+    output_node_id="f6e6b3ae-b78d-4549-8d7d-c7af327b0e6e",
+    duration_sec=15,
+    resolution="768P",
+    prompt_node_id="c4ca08e3-876e-4032-9f59-b9c765bb884e",
+    target_voice_node_id=None,
+    target_product_node_id="6137b730-55d0-45b1-89dc-2b442ef355e6",
+)
 
 # Preserve support for jobs created against Ripple's first 10-second workflow.
 LEGACY_TALKING_WORKFLOW = WorkflowSpec(
@@ -80,7 +96,8 @@ LEGACY_TALKING_WORKFLOW = WorkflowSpec(
 WORKFLOW_SPECS = (SEEDANCE2_WORKFLOW, SEEDANCE25_WORKFLOW, HAILUO3_WORKFLOW)
 WORKFLOW_SPECS_BY_MODEL = {spec.model: spec for spec in WORKFLOW_SPECS}
 WORKFLOW_SPECS_BY_ROUTE = {
-    spec.route_id: spec for spec in (LEGACY_TALKING_WORKFLOW, *WORKFLOW_SPECS)
+    spec.route_id: spec
+    for spec in (LEGACY_TALKING_WORKFLOW, PRODUCT_CLONE_WORKFLOW, *WORKFLOW_SPECS)
 }
 
 # Backward-compatible names used by persisted legacy jobs and external imports.
@@ -208,15 +225,26 @@ class RunwayWorkflowClient:
         target_face_uri: str,
         target_voice_uri: str | None,
         prompt: str,
+        target_product_uri: str | None = None,
     ) -> str:
         """Start one atomic-segment workflow invocation."""
         node_outputs: dict[str, dict[str, NodeOutputsNodeOutputsItem]] = {
-            REFERENCE_VIDEO_NODE_ID: {"video": {"type": "video", "uri": reference_video_uri}},
-            TARGET_FACE_NODE_ID: {"image": {"type": "image", "uri": target_face_uri}},
-            PROMPT_NODE_ID: {"prompt": {"type": "primitive", "value": prompt}},
+            self._spec.reference_video_node_id: {
+                "video": {"type": "video", "uri": reference_video_uri}
+            },
+            self._spec.target_face_node_id: {
+                "image": {"type": "image", "uri": target_face_uri}
+            },
+            self._spec.prompt_node_id: {"prompt": {"type": "primitive", "value": prompt}},
         }
-        if target_voice_uri is not None:
-            node_outputs[TARGET_VOICE_NODE_ID] = {
+        if self._spec.target_product_node_id is not None:
+            if target_product_uri is None:
+                raise PipelineError("the product clone Workflow requires a product image")
+            node_outputs[self._spec.target_product_node_id] = {
+                "image": {"type": "image", "uri": target_product_uri}
+            }
+        if target_voice_uri is not None and self._spec.target_voice_node_id is not None:
+            node_outputs[self._spec.target_voice_node_id] = {
                 "audio": {"type": "audio", "uri": target_voice_uri}
             }
         started = time.monotonic()
@@ -330,6 +358,7 @@ class RunwayWorkflowGateway:
             target_face_uri=request.reference_image,
             target_voice_uri=request.reference_audio,
             prompt=request.prompt_text,
+            target_product_uri=request.reference_product,
         )
 
     def poll(self, task_id: str) -> GenerationPoll:

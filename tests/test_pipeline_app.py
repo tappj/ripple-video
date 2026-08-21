@@ -29,6 +29,13 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Source video" in html
     assert "Target face" in html
     assert "Target voice" in html
+    assert "UGC product test" in html
+    assert "New product" in html
+    assert "Comparison route" in html
+    assert '"routeLabel":"Model Router API"' in html
+    assert '"label":"Hailuo 3"' in html
+    assert "ugc_product_clone_v1" in html
+    assert "0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0" not in html
     assert "Optional · keep source audio" in html
     assert "consent" in html
     assert "Generate clips" in html

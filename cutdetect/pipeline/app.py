@@ -43,12 +43,14 @@ from cutdetect.pipeline.runway_client import (
     RunwayDirectGateway,
     RunwayReferenceModel,
     RunwayRouterGateway,
+    model_router_route,
     router_config_id_from_route,
 )
 from cutdetect.pipeline.stitch import stitch_job
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import PROMPT_TEMPLATES
+from cutdetect.pipeline.templates import PROMPT_TEMPLATES, UGC_CLONE_V1, UGC_PRODUCT_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
+    PRODUCT_CLONE_WORKFLOW,
     RunwayWorkflowGateway,
     is_workflow_route,
     workflow_spec_for_model,
@@ -92,6 +94,22 @@ def _boot_payload() -> dict[str, object]:
                 "notes": caps.notes,
             }
             for model_id, caps in MODEL_CAPABILITIES.items()
+        },
+        "productRoutes": {
+            "router": {
+                "label": "Seedance 2.0",
+                "routeLabel": "Model Router API",
+                "model": "seedance2",
+                "ratio": "9:16",
+                "resolution": "720p",
+            },
+            "workflow": {
+                "label": "Hailuo 3",
+                "routeLabel": "Workflow API",
+                "model": "hailuo3",
+                "ratio": "9:16",
+                "resolution": PRODUCT_CLONE_WORKFLOW.resolution,
+            },
         },
         "templates": [asdict(template) for template in PROMPT_TEMPLATES.values()],
     }
@@ -579,7 +597,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             self._error(error)
 
     def _save_upload(self, session_id: str, role: str) -> None:
-        if not _valid_id(session_id) or role not in {"video", "image", "audio"}:
+        if not _valid_id(session_id) or role not in {"video", "image", "audio", "product"}:
             raise PipelineError("invalid upload target")
         owner_hash = self._owner_hash()
         with self.server.session_lock:
@@ -597,6 +615,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             "video": {".mp4", ".mov", ".mkv", ".webm", ".m4v"},
             "image": {".jpg", ".jpeg", ".png", ".webp"},
             "audio": {".mp3", ".wav", ".flac", ".m4a", ".aac"},
+            "product": {".jpg", ".jpeg", ".png", ".webp"},
         }
         suffix = Path(filename).suffix.lower()
         if suffix not in allowed[role]:
@@ -631,10 +650,39 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             image = Path(str(state.get("image", "")))
             audio_value = state.get("audio")
             audio = Path(str(audio_value)) if audio_value else None
+            product_value = state.get("product")
+            product = Path(str(product_value)) if product_value else None
+            experience = str(body.get("experience", "clone"))
+            if experience not in {"clone", "product"}:
+                raise PipelineError("unsupported generation experience")
             if not video.is_file() or not image.is_file():
                 raise PipelineError("upload a source video and target face first")
             if audio is not None and not audio.is_file():
                 raise PipelineError("the optional voice reference is unavailable")
+            if experience == "product" and (product is None or not product.is_file()):
+                raise PipelineError("upload a product image for the product consistency test")
+            product_route = str(body.get("product_route", "router"))
+            if experience == "product" and product_route not in {"router", "workflow"}:
+                raise PipelineError("unsupported product test route")
+            selected_route: str | None
+            selected_resolution: str | None
+            if experience == "product" and product_route == "router":
+                selected_model = "seedance2"
+                selected_resolution = "720p"
+                selected_route = model_router_route("seedance2")
+            elif experience == "product":
+                selected_model = "hailuo3"
+                selected_resolution = PRODUCT_CLONE_WORKFLOW.resolution
+                selected_route = PRODUCT_CLONE_WORKFLOW.route_id
+            else:
+                selected_model = str(body.get("model", "seedance2"))
+                selected_resolution = (
+                    str(body.get("resolution")) if body.get("resolution") else None
+                )
+                selected_route = None
+            selected_template = (
+                UGC_PRODUCT_CLONE_V1 if experience == "product" else UGC_CLONE_V1
+            )
             if state.get("status") in {"ANALYZING", "GENERATING"}:
                 raise PipelineError("this session is already being prepared")
             state.update(
@@ -642,14 +690,15 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 stage="Detecting hard cuts…",
                 message="Reading visual and audio boundary evidence.",
                 request={
-                    "model": str(body.get("model", "seedance2")),
+                    "experience": experience,
+                    "product_route": product_route if experience == "product" else None,
+                    "model": selected_model,
                     "ratio": "9:16",
-                    "resolution": (
-                        str(body.get("resolution")) if body.get("resolution") else None
-                    ),
+                    "resolution": selected_resolution,
+                    "route_id": selected_route,
                     "prompt": str(body.get("prompt", "")),
-                    "template_id": str(body.get("template_id", "ugc_clone_v1")),
-                    "template_version": int(str(body.get("template_version", 1))),
+                    "template_id": selected_template.id,
+                    "template_version": selected_template.version,
                     "auto_run": body.get("auto_run") is True,
                 },
                 updated_at=time.time(),
@@ -689,7 +738,14 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             image = Path(str(state.get("image", "")))
             audio_value = state.get("audio")
             audio = Path(str(audio_value)) if audio_value else None
-            if not video.is_file() or not image.is_file() or (audio and not audio.is_file()):
+            product_value = state.get("product")
+            product = Path(str(product_value)) if product_value else None
+            if (
+                not video.is_file()
+                or not image.is_file()
+                or (audio and not audio.is_file())
+                or (body.get("experience") == "product" and (not product or not product.is_file()))
+            ):
                 raise PipelineError("saved preparation inputs are unavailable")
 
             if not self.server.analysis_lock.acquire(blocking=False):
@@ -742,6 +798,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     video,
                     image,
                     audio,
+                    product=product,
                     predictions=predictions,
                     output_root=self.server.root,
                     cache_dir=self.server.cache_dir,
@@ -750,6 +807,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     resolution=(
                         str(body.get("resolution")) if body.get("resolution") else None
                     ),
+                    route_id=str(body.get("route_id")) if body.get("route_id") else None,
                     prompt=str(body.get("prompt", "")),
                     prompt_template_id=str(body.get("template_id", "ugc_clone_v1")),
                     prompt_template_version=int(str(body.get("template_version", 1))),
@@ -774,6 +832,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 ),
                 estimated_credits=job.estimated_credits,
                 job_id=job.id,
+                model_id=job.model_id,
                 error=None,
             )
             if auto_run:

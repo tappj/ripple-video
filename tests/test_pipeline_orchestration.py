@@ -15,7 +15,7 @@ from cutdetect.pipeline.orchestration import (
     format_sse_events,
 )
 from cutdetect.pipeline.runway_client import GenerationPoll, GenerationRequest
-from cutdetect.pipeline.workflow_client import SEEDANCE25_WORKFLOW
+from cutdetect.pipeline.workflow_client import PRODUCT_CLONE_WORKFLOW, SEEDANCE25_WORKFLOW
 
 SEGMENT_CREDITS = 102
 
@@ -76,11 +76,13 @@ def _create_job(
     model_id: str = "hailuo3",
     route_id: str = DIRECT_API_ROUTE,
     resolution: str = "768P",
+    product: bool = False,
 ) -> str:
     source = root / f"{job_id}-source.mp4"
     face = root / f"{job_id}-face.jpg"
     voice = root / f"{job_id}-voice.mp3"
-    for path in (source, face, voice):
+    product_image = root / f"{job_id}-product.jpg"
+    for path in (source, face, voice, product_image):
         path.write_bytes(b"test")
     segments = tuple(
         AtomicSegment(
@@ -109,6 +111,7 @@ def _create_job(
         source_path=source,
         target_face_path=face,
         target_voice_path=voice,
+        target_product_path=product_image if product else None,
         prompt="test prompt",
         grouping=grouping,
         input_paths=inputs,
@@ -143,6 +146,26 @@ def test_workflow_jobs_request_fixed_maximum_then_trim_to_source_duration(
     assert segment.estimated_credits == credit_cost(
         "seedance2_5", 15, "720p", reference_video_duration_s=5
     )
+
+
+def test_product_clone_workflow_is_a_distinct_hailuo_route(tmp_path: Path) -> None:
+    store = PhaseCStore(tmp_path / "jobs.sqlite3")
+    job_id = _create_job(
+        store,
+        tmp_path,
+        1,
+        model_id="hailuo3",
+        route_id=PRODUCT_CLONE_WORKFLOW.route_id,
+        resolution="768P",
+        product=True,
+    )
+
+    job = store.job(job_id)
+    segment = store.segments(job_id)[0]
+    assert job.target_product_path is not None
+    assert job.route_id == PRODUCT_CLONE_WORKFLOW.route_id
+    assert segment.requested_duration_sec == 15
+    store.close()
 
 
 def test_jobs_are_isolated_by_device_identity(tmp_path: Path) -> None:

@@ -71,6 +71,7 @@ are in place.
 | `RUNWAY_SEEDANCE2_WORKFLOW_ID` | published ID above | Seedance 2.0 Workflow |
 | `RUNWAY_SEEDANCE25_WORKFLOW_ID` | published ID above | Seedance 2.5 Workflow |
 | `RUNWAY_HAILUO3_WORKFLOW_ID` | published ID above | Hailuo 3.0 Workflow |
+| `RUNWAY_PRODUCT_CLONE_WORKFLOW_ID` | published ID above | UGC product-clone Hailuo 3 Workflow |
 | `RIPPLE_ACCESS_PASSWORD` | none | Optional shared beta password |
 | `RIPPLE_MAX_UPLOAD_MIB` | `256` | Maximum size of each uploaded asset |
 | `RIPPLE_DATA_DIR` | `/data/ripple` | Jobs, SQLite, uploads, and output media |
