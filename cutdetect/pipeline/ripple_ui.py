@@ -94,7 +94,7 @@ window.addEventListener('beforeunload',()=>Object.values(objectUrls).forEach(url
 const model=$('#model'),ratio=$('#ratio'),resolution=$('#resolution');
 Object.entries(BOOT.models).forEach(([id,caps])=>model.add(new Option(caps.label,id)));
 model.value='seedance2';
-function syncModelOptions(){const caps=BOOT.models[model.value];ratio.innerHTML='';caps.ratios.forEach(value=>ratio.add(new Option(value,value)));ratio.value=caps.defaultRatio;resolution.innerHTML='';caps.resolutions.forEach(value=>resolution.add(new Option(value,value)));resolution.value=caps.defaultResolution;$('#modelChip').textContent=`${caps.label} · ${caps.routeLabel}`;$('#routeNote').textContent=`${caps.routeDetail} · fresh task per clip`}
+function syncModelOptions(){const caps=BOOT.models[model.value];ratio.innerHTML='';caps.ratios.forEach(value=>ratio.add(new Option(value,value)));ratio.value=caps.defaultRatio;resolution.innerHTML='';caps.resolutions.forEach(value=>resolution.add(new Option(value,value)));resolution.value=caps.defaultResolution;$('#modelChip').textContent=`${caps.label} · ${caps.routeLabel}`;$('#routeNote').textContent='Fresh task per clip'}
 model.onchange=syncModelOptions;syncModelOptions();
 $('#prompt').value=BOOT.templates[0].body;
 async function api(path,options={}){const headers=new Headers(options.headers||{});headers.set('X-Ripple-Device',deviceId);const response=await fetch(path,{...options,headers});let data={};try{data=await response.json()}catch{}if(!response.ok){const error=new Error(data.error||`${response.status} ${response.statusText}`);error.status=response.status;throw error}return data}

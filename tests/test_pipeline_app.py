@@ -43,7 +43,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert 'id="previewImage"' in html
     assert 'id="previewAudio"' in html
     assert "URL.createObjectURL(file)" in html
-    assert "fresh task per clip" in html
+    assert "Fresh task per clip" in html
+    assert "4af4fdf6-a371-4a73-b02d-fdbf116186d5" not in html
     assert "Seedance 2.5" in html
     assert "Hailuo 3.0" in html
     assert "Workflow API" in html

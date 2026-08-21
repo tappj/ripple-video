@@ -86,7 +86,6 @@ def _boot_payload() -> dict[str, object]:
                 "defaultRatio": "9:16",
                 "defaultResolution": workflows[model_id].resolution,
                 "routeLabel": "Workflow API",
-                "routeDetail": workflows[model_id].workflow_id,
                 "minDuration": caps.min_duration_s,
                 "maxDuration": caps.max_duration_s,
                 "supportsInternalCuts": caps.supports_internal_cuts,
