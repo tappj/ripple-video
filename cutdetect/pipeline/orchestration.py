@@ -1063,7 +1063,12 @@ class PhaseCWorker:
                 reference_audio=refreshed_job.target_voice_uri,
                 reference_product=refreshed_job.target_product_uri,
                 prompt_text=generation_prompt(
-                    job.prompt_template_id, segment.prompt_override or job.prompt
+                    job.prompt_template_id,
+                    segment.prompt_override or job.prompt,
+                    # An "Audio 1" clause with no audio reference attached invites the
+                    # model to invent a voice, so the base prompt tracks the references
+                    # that are actually submitted.
+                    has_voice=refreshed_job.target_voice_uri is not None,
                 ),
                 duration=segment.requested_duration_sec,
                 ratio=job.ratio,

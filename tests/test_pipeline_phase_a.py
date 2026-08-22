@@ -22,7 +22,11 @@ from cutdetect.pipeline.runway_client import (
     seedance_ratio,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import UGC_CLONE_V1, strict_generation_prompt
+from cutdetect.pipeline.templates import (
+    UGC_CLONE_NO_VOICE_V1,
+    UGC_CLONE_V1,
+    strict_generation_prompt,
+)
 from cutdetect.pipeline.workflow_client import (
     HAILUO3_WORKFLOW,
     SEEDANCE2_WORKFLOW,
@@ -44,8 +48,25 @@ def test_strict_clone_constraints_cannot_be_replaced_by_retry_direction() -> Non
     prompt = strict_generation_prompt("Make the delivery more energetic.")
 
     assert prompt.startswith(UGC_CLONE_V1.body)
-    assert "preserving the exact words and timing" in prompt
-    assert prompt.endswith("Additional direction: Make the delivery more energetic.")
+    assert "Video 1 is the only source of the words" in prompt
+    assert prompt.endswith("ADDITIONAL DIRECTION. Make the delivery more energetic.")
+
+
+def test_clone_prompt_only_mentions_audio_1_when_a_voice_is_supplied() -> None:
+    with_voice = strict_generation_prompt("", has_voice=True)
+    without_voice = strict_generation_prompt("", has_voice=False)
+
+    assert "Audio 1" in with_voice
+    assert "Audio 1" not in without_voice
+    assert without_voice == UGC_CLONE_NO_VOICE_V1.body
+
+
+def test_either_clone_base_is_recognised_as_an_unedited_default() -> None:
+    assert strict_generation_prompt(UGC_CLONE_NO_VOICE_V1.body) == UGC_CLONE_V1.body
+    assert (
+        strict_generation_prompt(UGC_CLONE_V1.body, has_voice=False)
+        == UGC_CLONE_NO_VOICE_V1.body
+    )
 
 
 def test_superseded_builtin_prompt_is_not_appended_to_current_prompt() -> None:
