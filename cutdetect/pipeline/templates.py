@@ -19,23 +19,28 @@ class PromptTemplate:
 # Seedance regenerates audio natively and treats a reference clip as a style and
 # cadence hint rather than a source of words, so every reference gets one
 # exclusive job and the clip states what it carries instead of what to avoid.
+# The person belongs entirely to Image 1; the frame around them belongs entirely
+# to Video 1.
 _CLONE_OPENING = (
-    "Recreate Video 1 as one continuous take at 1.0x speed: the same person, in the same "
-    "place, moving and speaking exactly as they do in Video 1, with the face of Image 1."
+    "Recreate Video 1 as one continuous take at 1.0x speed: the person from Image 1 performing "
+    "Video 1 exactly - the same place, the same movements, the same words, at the same moments."
 )
 
 _CLONE_IDENTITY = (
-    "IDENTITY. Image 1 provides the face only - facial features, head shape, hairline, and "
-    "skin tone - identical in every frame. One single face carries the whole clip, from the "
-    "first frame to the last."
+    "PERSON. Image 1 provides the whole person: facial features, head shape, hairline, hair, "
+    "skin tone, build, and everything they wear in Image 1 - the same clothing in the same cut "
+    "and color, the same accessories, eyewear, and jewelry. Every part of the person that "
+    "Image 1 shows carries over exactly and stays identical in every frame, from the first to "
+    "the last. Where Image 1 stops short of the full body, continue the same outfit plainly "
+    "and consistently with what Image 1 shows, and hold it fixed for the whole clip."
 )
 
 _CLONE_FRAME = (
-    "FRAME. Everything else comes from Video 1 and only from Video 1: the same body and "
-    "posture, the same clothing in the same cut and color, the same accessories, eyewear, "
-    "jewelry, and hands, the same held objects, the same background with the same objects in "
-    "the same positions, the same lighting and color grade. What Video 1 shows stays exactly "
-    "as it is; what Video 1 does not show never appears."
+    "FRAME. Everything that is not the person comes from Video 1 and only from Video 1: the "
+    "same background with the same objects in the same positions, the same held objects, the "
+    "same lighting, shadows, and color grade, and the person standing or sitting at the same "
+    "place and scale within the shot. What Video 1 shows around the person stays exactly as it "
+    "is; what Video 1 does not show never appears."
 )
 
 _CLONE_MOTION = (
@@ -49,13 +54,18 @@ _CLONE_MOUTH = (
     "syllable for syllable, on the same timings, with the same pauses and breaths."
 )
 
+# Seedance 2 rejects any promptText longer than this.
+MAX_PROMPT_CHARS = 3500
+
 _CLONE_EXCLUSIONS = "No on-screen text, no subtitles, no second person."
+
+_CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
 
 
 UGC_CLONE_V1 = PromptTemplate(
     id="ugc_clone_v1",
     label="UGC Clone",
-    version=7,
+    version=8,
     body="\n\n".join(
         (
             _CLONE_OPENING,
@@ -74,13 +84,20 @@ UGC_CLONE_V1 = PromptTemplate(
                 "output. One consistent voice, tone, and recording quality carries the whole "
                 "clip."
             ),
-            "SOUND. Reproduce Video 1's background ambience at its original level.",
+            (
+                "SOUND. The only audio to generate is the person's voice and the sound effects "
+                "that match on-screen action. Video 1's existing background audio carries "
+                "through underneath it exactly as recorded, at its original level and in its "
+                "original mix - any music already in Video 1 plays on unchanged and uncovered. "
+                "Compose no new music, lay no track over what is already there, and swap "
+                "nothing out for a different one."
+            ),
             (
                 "ENDING. The dialogue finishes before the final frame, then hold the closing "
                 "moment naturally - no filler words, repeated phrases, or invented gestures to "
                 "fill time."
             ),
-            f"{_CLONE_EXCLUSIONS[:-1]}, no background music.",
+            f"{_CLONE_EXCLUSIONS}{_CLONE_MUSIC_EXCLUSION}",
         )
     ),
     editable_by_user=True,
@@ -92,7 +109,7 @@ UGC_CLONE_V1 = PromptTemplate(
 UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
     id="ugc_clone_v1_no_voice",
     label="UGC Clone (source audio)",
-    version=7,
+    version=8,
     body="\n\n".join(
         (
             _CLONE_OPENING,
@@ -117,7 +134,7 @@ UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
 UGC_PRODUCT_CLONE_V1 = PromptTemplate(
     id="ugc_product_clone_v1",
     label="UGC Product Clone",
-    version=2,
+    version=3,
     body="\n\n".join(
         (
             f"{_CLONE_OPENING[:-1]}, holding the product from Image 2.",
@@ -174,7 +191,10 @@ def _apply_base(base: str, direction: str, *, defaults: tuple[str, ...]) -> str:
     cleaned = direction.strip()
     if not cleaned or cleaned in defaults or cleaned in _SUPERSEDED_DEFAULT_PROMPTS:
         return base
-    return f"{base}\n\nADDITIONAL DIRECTION. {cleaned}"
+    prefix = f"{base}\n\nADDITIONAL DIRECTION. "
+    # Seedance rejects a prompt over its character limit outright, so the base
+    # constraints keep their room and only the user's direction gives way.
+    return f"{prefix}{cleaned}"[:MAX_PROMPT_CHARS].rstrip()
 
 
 def strict_generation_prompt(direction: str, *, has_voice: bool = True) -> str:

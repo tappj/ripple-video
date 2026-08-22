@@ -57,9 +57,11 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Workflow API" in html
     assert "Generation route" in html
     assert "Recreate Video 1 as one continuous take at 1.0x speed" in html
-    assert "Image 1 provides the face only" in html
+    assert "Image 1 provides the whole person" in html
+    assert "Everything that is not the person comes from Video 1" in html
     assert "Video 1 is the only source of the words" in html
     assert "Audio 1 is a voice sample, not a script" in html
+    assert "any music already in Video 1 plays on unchanged and uncovered" in html
     assert "woman from Image 1" not in html
     assert "Confirm & generate" not in html
     assert "Original reference" not in html
