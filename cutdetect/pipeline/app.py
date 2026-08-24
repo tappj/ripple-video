@@ -218,6 +218,44 @@ class _PipelineServer(ThreadingHTTPServer):
     preparation_lock: threading.Lock
 
 
+def _start_stitch_operation(server: _PipelineServer, job_id: str) -> bool:
+    """Start or resume one durable stitch operation without duplicating work."""
+    with server.active_lock:
+        if job_id in server.active_jobs:
+            return False
+        server.active_jobs.add(job_id)
+    storage = LocalDiskStorage(server.root)
+    try:
+        with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
+            job = store.job(job_id)
+            if job.state not in {JobState.REVIEW, JobState.STITCHING}:
+                raise PipelineError(f"job {job_id} cannot stitch from {job.state.value}")
+            store.set_job_state(job_id, JobState.STITCHING)
+    except Exception:
+        with server.active_lock:
+            server.active_jobs.discard(job_id)
+        raise
+
+    def finish() -> None:
+        try:
+            with PhaseCStore(storage.path("orchestration.sqlite3")) as worker_store:
+                try:
+                    stitch_job(worker_store, storage, job_id)
+                except Exception as error:
+                    worker_store.record_event(
+                        job_id,
+                        "job.stitch_failed",
+                        payload={"message": str(error)},
+                    )
+                    worker_store.set_job_state(job_id, JobState.REVIEW)
+        finally:
+            with server.active_lock:
+                server.active_jobs.discard(job_id)
+
+    threading.Thread(target=finish, daemon=True).start()
+    return True
+
+
 def _valid_id(value: str) -> bool:
     return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
 
@@ -1022,34 +1060,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         self._json(self._job_payload(job_id, owner_hash))
                         return
                     if len(parts) == 4 and parts[3] == "stitch":
-                        with self.server.active_lock:
-                            if job_id in self.server.active_jobs:
-                                raise PipelineError("this job already has an active operation")
-                            self.server.active_jobs.add(job_id)
-                        # Persist the transition before returning 202 so an immediate
-                        # client refresh cannot redraw the review grid while stitching
-                        # is already active in the background.
-                        store.set_job_state(job_id, JobState.STITCHING)
-
-                        def finish() -> None:
-                            try:
-                                with PhaseCStore(
-                                    storage.path("orchestration.sqlite3")
-                                ) as worker_store:
-                                    try:
-                                        stitch_job(worker_store, storage, job_id)
-                                    except Exception as error:
-                                        worker_store.record_event(
-                                            job_id,
-                                            "job.stitch_failed",
-                                            payload={"message": str(error)},
-                                        )
-                                        worker_store.set_job_state(job_id, JobState.REVIEW)
-                            finally:
-                                with self.server.active_lock:
-                                    self.server.active_jobs.discard(job_id)
-
-                        threading.Thread(target=finish, daemon=True).start()
+                        if not _start_stitch_operation(self.server, job_id):
+                            raise PipelineError("this job already has an active operation")
                         self._json({"status": "STITCHING"}, HTTPStatus.ACCEPTED)
                         return
                     if len(parts) == 6 and parts[3] == "segments":
@@ -1115,6 +1127,14 @@ def create_pipeline_server(
     server.active_lock = threading.Lock()
     server.active_preparations = set()
     server.preparation_lock = threading.Lock()
+    database = server.root / "orchestration.sqlite3"
+    if database.is_file():
+        with PhaseCStore(database) as store:
+            interrupted_stitches = tuple(
+                job.id for job in store.jobs() if job.state == JobState.STITCHING
+            )
+        for job_id in interrupted_stitches:
+            _start_stitch_operation(server, job_id)
     return server
 
 
