@@ -26,6 +26,16 @@ TARGET_FACE_NODE_ID = "f6de2210-8e15-435a-9348-b7d9cab5ef5a"
 TARGET_VOICE_NODE_ID = "3082700d-5a09-41eb-8e5b-8d3a6eea1e9e"
 PROMPT_NODE_ID = "46cc4af4-a180-4c37-bcfb-7cf08faca3b5"
 WORKFLOW_ROUTE_PREFIX = "workflow:"
+DELETED_SEEDANCE2_WORKFLOW_ID = "f28115cf-16bd-453f-9f3c-e766982951a4"
+DEFAULT_SEEDANCE2_WORKFLOW_ID = "5f4cc974-e5c3-4d0a-8c1e-506eded573c7"
+
+
+def _seedance2_workflow_id() -> str:
+    """Ignore the known-deleted endpoint while retaining future environment overrides."""
+    configured = os.environ.get("RUNWAY_SEEDANCE2_WORKFLOW_ID", "").strip()
+    if not configured or configured == DELETED_SEEDANCE2_WORKFLOW_ID:
+        return DEFAULT_SEEDANCE2_WORKFLOW_ID
+    return configured
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,11 +60,14 @@ class WorkflowSpec:
 
 SEEDANCE2_WORKFLOW = WorkflowSpec(
     model="seedance2",
-    workflow_id=os.environ.get("RUNWAY_SEEDANCE2_WORKFLOW_ID")
-    or "f28115cf-16bd-453f-9f3c-e766982951a4",
-    output_node_id="3df2ef68-f469-4792-a027-c87cefc6f9b8",
+    workflow_id=_seedance2_workflow_id(),
+    output_node_id="b8caabf3-3000-43d0-a740-3fcef85c8153",
     duration_sec=15,
     resolution="720p",
+    reference_video_node_id="6e4db3d7-8aa5-4def-abdb-6b0ec607f25e",
+    target_face_node_id="97e7f919-1eb5-4fc1-ae62-388e404cd6b7",
+    prompt_node_id="0c6c3f68-da4d-40fb-a0a0-f7ef86644435",
+    target_voice_node_id=None,
 )
 SEEDANCE25_WORKFLOW = WorkflowSpec(
     model="seedance2_5",
@@ -99,6 +112,11 @@ WORKFLOW_SPECS_BY_ROUTE = {
     spec.route_id: spec
     for spec in (LEGACY_TALKING_WORKFLOW, PRODUCT_CLONE_WORKFLOW, *WORKFLOW_SPECS)
 }
+# Jobs prepared before the endpoint was deleted keep their original route ID.
+# Resolve that route to the replacement graph so Retry works without a new upload.
+WORKFLOW_SPECS_BY_ROUTE[
+    WORKFLOW_ROUTE_PREFIX + DELETED_SEEDANCE2_WORKFLOW_ID
+] = SEEDANCE2_WORKFLOW
 
 # Backward-compatible names used by persisted legacy jobs and external imports.
 TALKING_WORKFLOW_ID = LEGACY_TALKING_WORKFLOW.workflow_id

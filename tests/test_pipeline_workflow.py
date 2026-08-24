@@ -7,15 +7,72 @@ from cutdetect.pipeline.runway_client import GenerationRequest, JsonlCallLogger,
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import UGC_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
+    DEFAULT_SEEDANCE2_WORKFLOW_ID,
+    DELETED_SEEDANCE2_WORKFLOW_ID,
     PRODUCT_CLONE_WORKFLOW,
     PROMPT_NODE_ID,
     REFERENCE_VIDEO_NODE_ID,
+    SEEDANCE2_WORKFLOW,
     SEEDANCE25_WORKFLOW,
     TARGET_FACE_NODE_ID,
     TARGET_VOICE_NODE_ID,
     RunwayWorkflowClient,
     RunwayWorkflowGateway,
+    workflow_spec_for_route,
 )
+
+
+def test_republished_seedance2_workflow_has_no_target_audio_mapping() -> None:
+    spec = SEEDANCE2_WORKFLOW
+
+    assert spec.workflow_id == DEFAULT_SEEDANCE2_WORKFLOW_ID
+    assert spec.reference_video_node_id == "6e4db3d7-8aa5-4def-abdb-6b0ec607f25e"
+    assert spec.target_face_node_id == "97e7f919-1eb5-4fc1-ae62-388e404cd6b7"
+    assert spec.prompt_node_id == "0c6c3f68-da4d-40fb-a0a0-f7ef86644435"
+    assert spec.output_node_id == "b8caabf3-3000-43d0-a740-3fcef85c8153"
+    assert spec.target_voice_node_id is None
+    assert workflow_spec_for_route(
+        "workflow:" + DELETED_SEEDANCE2_WORKFLOW_ID
+    ) is spec
+
+
+def test_republished_seedance2_submission_ignores_legacy_target_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeWorkflows:
+        def run(self, workflow_id: str, *, node_outputs: object) -> SimpleNamespace:
+            calls.append({"workflow_id": workflow_id, "node_outputs": node_outputs})
+            return SimpleNamespace(id="replacement-invocation")
+
+    class FakeRunway:
+        def __init__(self, **_kwargs: object) -> None:
+            self.workflows = FakeWorkflows()
+
+    monkeypatch.setattr("cutdetect.pipeline.workflow_client.RunwayML", FakeRunway)
+    client = RunwayWorkflowClient(
+        api_key="key_test",
+        logger=JsonlCallLogger(tmp_path / "calls.jsonl"),
+        storage=LocalDiskStorage(tmp_path),
+        spec=SEEDANCE2_WORKFLOW,
+    )
+
+    client.submit(
+        reference_video_uri="runway://video",
+        target_face_uri="runway://face",
+        target_voice_uri="runway://legacy-voice",
+        prompt="visual prompt",
+    )
+
+    assert calls[0]["workflow_id"] == DEFAULT_SEEDANCE2_WORKFLOW_ID
+    outputs = calls[0]["node_outputs"]
+    assert isinstance(outputs, dict)
+    assert set(outputs) == {
+        SEEDANCE2_WORKFLOW.reference_video_node_id,
+        SEEDANCE2_WORKFLOW.target_face_node_id,
+        SEEDANCE2_WORKFLOW.prompt_node_id,
+    }
 
 
 def test_workflow_submission_overrides_every_reference_and_backend_prompt(
