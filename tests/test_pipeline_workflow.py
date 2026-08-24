@@ -9,6 +9,7 @@ from cutdetect.pipeline.templates import UGC_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
     DEFAULT_SEEDANCE2_WORKFLOW_ID,
     DELETED_SEEDANCE2_WORKFLOW_ID,
+    PREVIOUS_SEEDANCE2_WORKFLOW_ID,
     PRODUCT_CLONE_WORKFLOW,
     PROMPT_NODE_ID,
     REFERENCE_VIDEO_NODE_ID,
@@ -33,6 +34,9 @@ def test_republished_seedance2_workflow_has_no_target_audio_mapping() -> None:
     assert spec.target_voice_node_id is None
     assert workflow_spec_for_route(
         "workflow:" + DELETED_SEEDANCE2_WORKFLOW_ID
+    ) is spec
+    assert workflow_spec_for_route(
+        "workflow:" + PREVIOUS_SEEDANCE2_WORKFLOW_ID
     ) is spec
 
 

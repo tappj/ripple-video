@@ -27,13 +27,18 @@ TARGET_VOICE_NODE_ID = "3082700d-5a09-41eb-8e5b-8d3a6eea1e9e"
 PROMPT_NODE_ID = "46cc4af4-a180-4c37-bcfb-7cf08faca3b5"
 WORKFLOW_ROUTE_PREFIX = "workflow:"
 DELETED_SEEDANCE2_WORKFLOW_ID = "f28115cf-16bd-453f-9f3c-e766982951a4"
-DEFAULT_SEEDANCE2_WORKFLOW_ID = "5f4cc974-e5c3-4d0a-8c1e-506eded573c7"
+PREVIOUS_SEEDANCE2_WORKFLOW_ID = "5f4cc974-e5c3-4d0a-8c1e-506eded573c7"
+DEFAULT_SEEDANCE2_WORKFLOW_ID = "de5bdc33-f4ee-48bd-a8b1-f6db7b84c182"
+REPLACED_SEEDANCE2_WORKFLOW_IDS = (
+    DELETED_SEEDANCE2_WORKFLOW_ID,
+    PREVIOUS_SEEDANCE2_WORKFLOW_ID,
+)
 
 
 def _seedance2_workflow_id() -> str:
     """Ignore the known-deleted endpoint while retaining future environment overrides."""
     configured = os.environ.get("RUNWAY_SEEDANCE2_WORKFLOW_ID", "").strip()
-    if not configured or configured == DELETED_SEEDANCE2_WORKFLOW_ID:
+    if not configured or configured in REPLACED_SEEDANCE2_WORKFLOW_IDS:
         return DEFAULT_SEEDANCE2_WORKFLOW_ID
     return configured
 
@@ -114,9 +119,10 @@ WORKFLOW_SPECS_BY_ROUTE = {
 }
 # Jobs prepared before the endpoint was deleted keep their original route ID.
 # Resolve that route to the replacement graph so Retry works without a new upload.
-WORKFLOW_SPECS_BY_ROUTE[
-    WORKFLOW_ROUTE_PREFIX + DELETED_SEEDANCE2_WORKFLOW_ID
-] = SEEDANCE2_WORKFLOW
+for replaced_workflow_id in REPLACED_SEEDANCE2_WORKFLOW_IDS:
+    WORKFLOW_SPECS_BY_ROUTE[
+        WORKFLOW_ROUTE_PREFIX + replaced_workflow_id
+    ] = SEEDANCE2_WORKFLOW
 
 # Backward-compatible names used by persisted legacy jobs and external imports.
 TALKING_WORKFLOW_ID = LEGACY_TALKING_WORKFLOW.workflow_id
