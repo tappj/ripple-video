@@ -86,6 +86,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "events?device=" in html
     assert "ripple.pending.v1" in html
     assert "Reconnecting" in html
+    assert "Retry current step" in html
+    assert "Reusing completed clips and saved audio processing." in html
 
 
 def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -> None:

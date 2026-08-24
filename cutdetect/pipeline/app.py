@@ -37,6 +37,7 @@ from cutdetect.pipeline.orchestration import (
     JobState,
     PhaseCStore,
     PhaseCWorker,
+    SegmentState,
     format_sse_events,
     job_status,
     prepare_phase_c_job,
@@ -936,9 +937,27 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             if job_id in self.server.active_jobs:
                 return
             self.server.active_jobs.add(job_id)
+        storage = LocalDiskStorage(self.server.root)
+        try:
+            with PhaseCStore(storage.path("orchestration.sqlite3")) as resume_store:
+                resumable = resume_store.job(job_id)
+                if resumable.state == JobState.FAILED:
+                    if not any(
+                        segment.state == SegmentState.PENDING
+                        for segment in resume_store.segments(job_id)
+                    ):
+                        raise PipelineError(
+                            "this failed job has no incomplete generation step to resume"
+                        )
+                    # Persist before returning 202 so the browser cannot reload the
+                    # stale FAILED screen while this worker is already active.
+                    resume_store.set_job_state(job_id, JobState.RUNNING)
+        except Exception:
+            with self.server.active_lock:
+                self.server.active_jobs.discard(job_id)
+            raise
 
         def work() -> None:
-            storage = LocalDiskStorage(self.server.root)
             try:
                 with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
                     job = store.job(job_id)

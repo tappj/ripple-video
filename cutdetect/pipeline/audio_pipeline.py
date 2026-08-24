@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
-from runwayml import RunwayML
+from runwayml import APIConnectionError, APITimeoutError, RunwayML
 from runwayml.types.speech_to_speech_create_params import Voice
 from runwayml.types.task_retrieve_response import Failed, Succeeded
 from runwayml.types.text_to_speech_create_params import ElevenMultilingualV2Voice
@@ -40,6 +42,9 @@ RunwayPresetVoice = Literal[
 VOICE_ISOLATION_MIN_SEC = 4.6
 SPEECH_TO_SPEECH_MAX_SEC = 300.0
 VOICE_PREVIEW_TEXT = "This is your selected voice for Ripple."
+AUDIO_SUBMISSION_MAX_ATTEMPTS = 4
+AUDIO_RETRY_BASE_DELAY_SEC = 1.0
+_Result = TypeVar("_Result")
 
 
 def validate_voice_preset(value: str | None) -> str | None:
@@ -73,6 +78,51 @@ class RunwayAudioProcessor:
         self._client = RunwayML(api_key=api_key, max_retries=0)
         self._logger = logger
         self._storage = storage
+
+    def _call_with_retry(
+        self,
+        operation: str,
+        call: Callable[[], _Result],
+        *,
+        segment_index: int,
+    ) -> _Result:
+        """Retry transient provider submission failures without repeating completed stages."""
+        for attempt in range(1, AUDIO_SUBMISSION_MAX_ATTEMPTS + 1):
+            try:
+                return call()
+            except Exception as error:
+                status = getattr(error, "status_code", None)
+                retryable = (
+                    isinstance(error, (APIConnectionError, APITimeoutError))
+                    or status in {408, 409, 429}
+                    or (isinstance(status, int) and status >= 500)
+                )
+                self._logger.write(
+                    "runway.audio.submission_failed",
+                    operation=operation,
+                    segment_index=segment_index,
+                    attempt=attempt,
+                    max_attempts=AUDIO_SUBMISSION_MAX_ATTEMPTS,
+                    status_code=status,
+                    retryable=retryable,
+                    error_type=type(error).__name__,
+                )
+                if not retryable or attempt == AUDIO_SUBMISSION_MAX_ATTEMPTS:
+                    raise PipelineError(
+                        f"Runway {operation} failed for audio clip {segment_index + 1} "
+                        f"after {attempt} attempt{'s' if attempt != 1 else ''}: {error}"
+                    ) from error
+                base_delay = AUDIO_RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1))
+                delay = base_delay + random.uniform(0, base_delay * 0.5)
+                self._logger.write(
+                    "runway.audio.submission_retry_scheduled",
+                    operation=operation,
+                    segment_index=segment_index,
+                    next_attempt=attempt + 1,
+                    delay_sec=delay,
+                )
+                time.sleep(delay)
+        raise AssertionError("audio retry loop exhausted without returning or raising")
 
     def _state(self, key: str) -> dict[str, object]:
         path = self._storage.path(key)
@@ -171,8 +221,12 @@ class RunwayAudioProcessor:
         isolation_task_id = str(state.get("isolation_task_id", ""))
         if not isolation_task_id:
             try:
-                created = self._client.voice_isolation.create(
-                    model="eleven_voice_isolation", audio_uri=source_uri
+                created = self._call_with_retry(
+                    "voice isolation submission",
+                    lambda: self._client.voice_isolation.create(
+                        model="eleven_voice_isolation", audio_uri=source_uri
+                    ),
+                    segment_index=segment_index,
                 )
             except Exception as error:
                 raise PipelineError(
@@ -196,11 +250,15 @@ class RunwayAudioProcessor:
         if not speech_task_id:
             voice = cast(Voice, {"type": "runway-preset", "preset_id": preset})
             try:
-                created = self._client.speech_to_speech.create(
-                    model="eleven_multilingual_sts_v2",
-                    media={"type": "audio", "uri": isolated_uri},
-                    voice=voice,
-                    remove_background_noise=False,
+                created = self._call_with_retry(
+                    "speech-to-speech submission",
+                    lambda: self._client.speech_to_speech.create(
+                        model="eleven_multilingual_sts_v2",
+                        media={"type": "audio", "uri": isolated_uri},
+                        voice=voice,
+                        remove_background_noise=False,
+                    ),
+                    segment_index=segment_index,
                 )
             except Exception as error:
                 raise PipelineError(

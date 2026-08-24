@@ -27,8 +27,14 @@ def _processor(
     monkeypatch: pytest.MonkeyPatch,
     *,
     duration_sec: float,
+    speech_failures: int = 0,
+    speech_failure_status: int = 500,
 ) -> tuple[RunwayAudioProcessor, list[tuple[str, object]]]:
     calls: list[tuple[str, object]] = []
+    remaining_speech_failures = speech_failures
+
+    class FakeStatusError(Exception):
+        status_code = speech_failure_status
 
     class Uploads:
         def create_ephemeral(self, *, file: Path) -> SimpleNamespace:
@@ -42,7 +48,11 @@ def _processor(
 
     class Speech:
         def create(self, **kwargs: object) -> SimpleNamespace:
+            nonlocal remaining_speech_failures
             calls.append(("speech", kwargs))
+            if remaining_speech_failures:
+                remaining_speech_failures -= 1
+                raise FakeStatusError("provider unavailable")
             return SimpleNamespace(id="speech-task")
 
     class Tasks:
@@ -70,6 +80,10 @@ def _processor(
         return destination
 
     monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.extract_audio_track", fake_extract)
+    monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.time.sleep", lambda _delay: None)
+    monkeypatch.setattr(
+        "cutdetect.pipeline.audio_pipeline.random.uniform", lambda _start, _end: 0
+    )
 
     expected_duration = duration_sec
 
@@ -146,3 +160,71 @@ def test_short_clip_is_padded_and_still_runs_voice_isolation(
     assert isinstance(speech, dict)
     assert speech["media"] == {"type": "audio", "uri": "runway://isolated"}
     assert speech["remove_background_noise"] is False
+
+
+def test_transient_speech_submission_retries_without_repeating_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processor, calls = _processor(
+        tmp_path,
+        monkeypatch,
+        duration_sec=8,
+        speech_failures=2,
+    )
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+
+    processor.convert_clip_voice(
+        source, preset_id="Maya", job_id="retry", segment_index=1
+    )
+
+    assert [name for name, _payload in calls].count("isolation") == 1
+    assert [name for name, _payload in calls].count("speech") == 3
+
+
+def test_persistent_speech_submission_stops_after_bounded_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processor, calls = _processor(
+        tmp_path,
+        monkeypatch,
+        duration_sec=8,
+        speech_failures=4,
+    )
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+
+    with pytest.raises(
+        PipelineError,
+        match="speech-to-speech submission failed for audio clip 2 after 4 attempts",
+    ):
+        processor.convert_clip_voice(
+            source, preset_id="Maya", job_id="persistent", segment_index=1
+        )
+
+    assert [name for name, _payload in calls].count("isolation") == 1
+    assert [name for name, _payload in calls].count("speech") == 4
+
+
+def test_nonretryable_speech_submission_fails_immediately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processor, calls = _processor(
+        tmp_path,
+        monkeypatch,
+        duration_sec=8,
+        speech_failures=4,
+        speech_failure_status=400,
+    )
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+
+    with pytest.raises(
+        PipelineError,
+        match="speech-to-speech submission failed for audio clip 1 after 1 attempt",
+    ):
+        processor.convert_clip_voice(
+            source, preset_id="Maya", job_id="invalid", segment_index=0
+        )
+
+    assert [name for name, _payload in calls].count("speech") == 1
