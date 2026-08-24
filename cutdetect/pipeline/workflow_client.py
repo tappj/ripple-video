@@ -28,10 +28,12 @@ PROMPT_NODE_ID = "46cc4af4-a180-4c37-bcfb-7cf08faca3b5"
 WORKFLOW_ROUTE_PREFIX = "workflow:"
 DELETED_SEEDANCE2_WORKFLOW_ID = "f28115cf-16bd-453f-9f3c-e766982951a4"
 PREVIOUS_SEEDANCE2_WORKFLOW_ID = "5f4cc974-e5c3-4d0a-8c1e-506eded573c7"
-DEFAULT_SEEDANCE2_WORKFLOW_ID = "de5bdc33-f4ee-48bd-a8b1-f6db7b84c182"
+VIDEO_ONLY_SEEDANCE2_WORKFLOW_ID = "de5bdc33-f4ee-48bd-a8b1-f6db7b84c182"
+DEFAULT_SEEDANCE2_WORKFLOW_ID = "fecc0662-a1e1-4941-b84a-76df0bde1e4f"
 REPLACED_SEEDANCE2_WORKFLOW_IDS = (
     DELETED_SEEDANCE2_WORKFLOW_ID,
     PREVIOUS_SEEDANCE2_WORKFLOW_ID,
+    VIDEO_ONLY_SEEDANCE2_WORKFLOW_ID,
 )
 
 
@@ -72,7 +74,7 @@ SEEDANCE2_WORKFLOW = WorkflowSpec(
     reference_video_node_id="6e4db3d7-8aa5-4def-abdb-6b0ec607f25e",
     target_face_node_id="97e7f919-1eb5-4fc1-ae62-388e404cd6b7",
     prompt_node_id="0c6c3f68-da4d-40fb-a0a0-f7ef86644435",
-    target_voice_node_id=None,
+    target_voice_node_id="f8b888b1-1746-4b91-a05a-548c7a1350b5",
 )
 SEEDANCE25_WORKFLOW = WorkflowSpec(
     model="seedance2_5",

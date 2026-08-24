@@ -66,7 +66,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Image 1 provides the whole person" in html
     assert "Everything that is not the person comes from Video 1" in html
     assert "stays in sync with Video 1's original dialogue" in html
-    assert "Audio 1" not in html
+    assert "Audio 1 is the final dialogue track" in html
+    assert "No on-screen text" not in html
     assert "woman from Image 1" not in html
     assert "Confirm & generate" not in html
     assert "Original reference" not in html

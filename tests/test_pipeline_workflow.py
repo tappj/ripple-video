@@ -17,13 +17,14 @@ from cutdetect.pipeline.workflow_client import (
     SEEDANCE25_WORKFLOW,
     TARGET_FACE_NODE_ID,
     TARGET_VOICE_NODE_ID,
+    VIDEO_ONLY_SEEDANCE2_WORKFLOW_ID,
     RunwayWorkflowClient,
     RunwayWorkflowGateway,
     workflow_spec_for_route,
 )
 
 
-def test_republished_seedance2_workflow_has_no_target_audio_mapping() -> None:
+def test_republished_seedance2_workflow_maps_its_target_audio_input() -> None:
     spec = SEEDANCE2_WORKFLOW
 
     assert spec.workflow_id == DEFAULT_SEEDANCE2_WORKFLOW_ID
@@ -31,16 +32,19 @@ def test_republished_seedance2_workflow_has_no_target_audio_mapping() -> None:
     assert spec.target_face_node_id == "97e7f919-1eb5-4fc1-ae62-388e404cd6b7"
     assert spec.prompt_node_id == "0c6c3f68-da4d-40fb-a0a0-f7ef86644435"
     assert spec.output_node_id == "b8caabf3-3000-43d0-a740-3fcef85c8153"
-    assert spec.target_voice_node_id is None
+    assert spec.target_voice_node_id == "f8b888b1-1746-4b91-a05a-548c7a1350b5"
     assert workflow_spec_for_route(
         "workflow:" + DELETED_SEEDANCE2_WORKFLOW_ID
     ) is spec
     assert workflow_spec_for_route(
         "workflow:" + PREVIOUS_SEEDANCE2_WORKFLOW_ID
     ) is spec
+    assert workflow_spec_for_route(
+        "workflow:" + VIDEO_ONLY_SEEDANCE2_WORKFLOW_ID
+    ) is spec
 
 
-def test_republished_seedance2_submission_ignores_legacy_target_voice(
+def test_republished_seedance2_submission_supplies_generated_target_voice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[dict[str, object]] = []
@@ -76,7 +80,11 @@ def test_republished_seedance2_submission_ignores_legacy_target_voice(
         SEEDANCE2_WORKFLOW.reference_video_node_id,
         SEEDANCE2_WORKFLOW.target_face_node_id,
         SEEDANCE2_WORKFLOW.prompt_node_id,
+        SEEDANCE2_WORKFLOW.target_voice_node_id,
     }
+    voice_node_id = SEEDANCE2_WORKFLOW.target_voice_node_id
+    assert voice_node_id is not None
+    assert outputs[voice_node_id]["audio"]["uri"] == "runway://legacy-voice"
 
 
 def test_workflow_submission_overrides_every_reference_and_backend_prompt(

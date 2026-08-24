@@ -57,7 +57,15 @@ _CLONE_MOUTH = (
 # Seedance 2 rejects any promptText longer than this.
 MAX_PROMPT_CHARS = 3500
 
-_CLONE_EXCLUSIONS = "No on-screen text, no subtitles, no second person."
+_CLONE_VISUAL_GUARD = (
+    "Preserve every subtitle, caption, graphic, logo, and piece of on-screen text from Video 1 "
+    "exactly. Do not remove or add visual elements."
+)
+
+_CLONE_AUDIO = (
+    "AUDIO. Audio 1 is the final dialogue track. Use it as the video's audio and synchronize the "
+    "person's speech and mouth movement exactly to it."
+)
 
 _CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
 
@@ -65,7 +73,7 @@ _CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
 UGC_CLONE_V1 = PromptTemplate(
     id="ugc_clone_v1",
     label="UGC Clone",
-    version=9,
+    version=10,
     body="\n\n".join(
         (
             _CLONE_OPENING,
@@ -76,24 +84,25 @@ UGC_CLONE_V1 = PromptTemplate(
                 f"{_CLONE_MOUTH[:-1]}, so the performance stays in sync with Video 1's "
                 "original dialogue."
             ),
+            _CLONE_AUDIO,
             (
                 "ENDING. The performance finishes before the final frame, then hold the "
                 "closing moment naturally - no invented gestures or repeated movement to fill "
                 "time."
             ),
-            _CLONE_EXCLUSIONS,
+            _CLONE_VISUAL_GUARD,
         )
     ),
     editable_by_user=True,
 )
 
-# Audio is now mastered outside the video model, so both legacy call paths use the
-# same visual/lip-sync-only prompt and all provider-generated audio is discarded.
+# Source-audio jobs omit Audio 1 instructions because they do not submit a separate
+# voice reference. Preset jobs submit their finished voice track before video generation.
 UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
     id="ugc_clone_v1_no_voice",
     label="UGC Clone (source audio)",
-    version=9,
-    body=UGC_CLONE_V1.body,
+    version=10,
+    body=UGC_CLONE_V1.body.replace(f"\n\n{_CLONE_AUDIO}", ""),
     editable_by_user=False,
 )
 
@@ -119,7 +128,7 @@ UGC_PRODUCT_CLONE_V1 = PromptTemplate(
                 "ENDING. The performance finishes before the final frame, then hold the "
                 "closing moment naturally."
             ),
-            _CLONE_EXCLUSIONS,
+            _CLONE_VISUAL_GUARD,
         )
     ),
     editable_by_user=True,

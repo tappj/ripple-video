@@ -10,7 +10,7 @@ services:
       - key: RUNWAY_SEEDANCE_ROUTER_CONFIG_ID
         value: ripple-seedance-2
       - key: RUNWAY_SEEDANCE2_WORKFLOW_ID
-        value: de5bdc33-f4ee-48bd-a8b1-f6db7b84c182
+        value: fecc0662-a1e1-4941-b84a-76df0bde1e4f
       - key: RUNWAY_SEEDANCE25_WORKFLOW_ID
         value: 4af4fdf6-a371-4a73-b02d-fdbf116186d5
       - key: RUNWAY_HAILUO3_WORKFLOW_ID

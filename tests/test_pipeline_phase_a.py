@@ -52,14 +52,16 @@ def test_strict_clone_constraints_cannot_be_replaced_by_retry_direction() -> Non
     assert prompt.endswith("ADDITIONAL DIRECTION. Make the delivery more energetic.")
 
 
-def test_clone_prompt_never_passes_voice_instructions_to_the_video_model() -> None:
+def test_clone_prompt_uses_audio_reference_only_when_it_is_supplied() -> None:
     with_voice = strict_generation_prompt("", has_voice=True)
     without_voice = strict_generation_prompt("", has_voice=False)
 
-    assert "Audio 1" not in with_voice
+    assert "Audio 1 is the final dialogue track" in with_voice
     assert "Audio 1" not in without_voice
     assert without_voice == UGC_CLONE_NO_VOICE_V1.body
-    assert with_voice == without_voice
+    assert with_voice != without_voice
+    assert "Preserve every subtitle" in with_voice
+    assert "No on-screen text" not in with_voice
 
 
 def test_either_clone_base_is_recognised_as_an_unedited_default() -> None:

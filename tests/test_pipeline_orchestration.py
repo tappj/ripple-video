@@ -227,7 +227,7 @@ def test_submits_every_segment_before_polling_and_reuses_references(tmp_path: Pa
     store.close()
 
 
-def test_preset_voice_is_mastered_once_and_never_sent_to_the_video_model(
+def test_preset_voice_is_mastered_once_and_sent_before_video_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = PhaseCStore(tmp_path / "jobs.sqlite3")
@@ -285,8 +285,8 @@ def test_preset_voice_is_mastered_once_and_never_sent_to_the_video_model(
             return f"runway://{role}"
 
         def submit(self, request: GenerationRequest) -> str:
-            assert request.reference_audio is None
-            assert "Audio 1" not in request.prompt_text
+            assert request.reference_audio == "runway://segment_0_voice"
+            assert "Audio 1 is the final dialogue track" in request.prompt_text
             return "video-task"
 
         def poll(self, _task_id: str) -> GenerationPoll:
@@ -298,20 +298,21 @@ def test_preset_voice_is_mastered_once_and_never_sent_to_the_video_model(
             destination.write_bytes(b"provider video")
             return destination
 
-    def fake_replace(
-        _generated: Path,
-        _audio: Path,
-        destination: Path,
-        *,
-        audio_start_sec: float,
-        duration_sec: float,
+    def fake_slice(
+        _audio: Path, destination: Path, *, start_sec: float, duration_sec: float
     ) -> Path:
-        assert audio_start_sec == 0
+        assert start_sec == 0
+        assert duration_sec == 5
+        destination.write_bytes(b"clip voice")
+        return destination
+
+    def fake_trim(_generated: Path, duration_sec: float, destination: Path) -> Path:
         assert duration_sec == 5
         destination.write_bytes(b"final video")
         return destination
 
-    monkeypatch.setattr("cutdetect.pipeline.orchestration.replace_audio_track", fake_replace)
+    monkeypatch.setattr("cutdetect.pipeline.orchestration.slice_audio_track", fake_slice)
+    monkeypatch.setattr("cutdetect.pipeline.orchestration.trim_generated_duration", fake_trim)
     processor = VoiceProcessor()
     job = PhaseCWorker(
         store=store,

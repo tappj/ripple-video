@@ -230,3 +230,54 @@ def replace_audio_track(
         raise PipelineError(f"could not replace generated audio: {detail}")
     temporary.replace(destination)
     return destination
+
+
+def slice_audio_track(
+    source: Path,
+    destination: Path,
+    *,
+    start_sec: float,
+    duration_sec: float,
+) -> Path:
+    """Create the exact audio reference that corresponds to one video segment."""
+    if start_sec < 0 or duration_sec <= 0:
+        raise PipelineError("audio slice timing must be positive")
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise PipelineError("required executable not found on PATH: ffmpeg")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    completed = subprocess.run(
+        [
+            executable,
+            "-y",
+            "-v",
+            "error",
+            "-filter_threads",
+            "1",
+            "-i",
+            str(source),
+            "-ss",
+            f"{start_sec:.12f}",
+            "-t",
+            f"{duration_sec:.12f}",
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-f",
+            "ipod",
+            str(temporary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PipelineError(f"could not create clip audio reference: {detail}")
+    temporary.replace(destination)
+    return destination

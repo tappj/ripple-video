@@ -35,7 +35,7 @@ from cutdetect.pipeline.grouping import (
 )
 from cutdetect.pipeline.media import (
     preserve_source_audio,
-    replace_audio_track,
+    slice_audio_track,
     trim_generated_duration,
 )
 from cutdetect.pipeline.runway_client import (
@@ -1133,13 +1133,30 @@ class PhaseCWorker:
                 raise PipelineError("face reference upload is unavailable")
             if job.model_id not in MODEL_CAPABILITIES:
                 raise PipelineError(f"unsupported reference model: {job.model_id}")
+            reference_audio_uri = refreshed_job.target_voice_uri
+            if refreshed_job.voice_preset_id is not None:
+                voice_track = refreshed_job.voice_track_path
+                if voice_track is None or not voice_track.is_file():
+                    raise PipelineError("the converted voice master is unavailable")
+                clip_audio = segment.input_path.with_name("reference_voice.m4a")
+                if not clip_audio.is_file():
+                    slice_audio_track(
+                        voice_track,
+                        clip_audio,
+                        start_sec=segment.start_sec,
+                        duration_sec=segment.duration_sec,
+                    )
+                reference_audio_uri = self.gateway.upload(
+                    clip_audio,
+                    role=f"segment_{segment.index}_voice",
+                )
             # Every cut receives a new Runway task with only its original source
             # section and current prompt. No generated output is ever fed into a
             # later request, including retries.
             request = GenerationRequest(
                 reference_video=source_uri,
                 reference_image=refreshed_job.target_face_uri,
-                reference_audio=refreshed_job.target_voice_uri,
+                reference_audio=reference_audio_uri,
                 reference_product=refreshed_job.target_product_uri,
                 prompt_text=generation_prompt(
                     job.prompt_template_id,
@@ -1147,7 +1164,7 @@ class PhaseCWorker:
                     # An "Audio 1" clause with no audio reference attached invites the
                     # model to invent a voice, so the base prompt tracks the references
                     # that are actually submitted.
-                    has_voice=refreshed_job.target_voice_uri is not None,
+                    has_voice=reference_audio_uri is not None,
                 ),
                 duration=segment.requested_duration_sec,
                 ratio=job.ratio,
@@ -1220,17 +1237,13 @@ class PhaseCWorker:
         try:
             job = self.store.job(segment.job_id)
             if job.voice_preset_id is not None:
-                if job.voice_track_path is None or not job.voice_track_path.is_file():
-                    raise PipelineError("the converted voice master is unavailable")
                 output_key = Path(segment.output_key)
                 provider_key = str(output_key.with_name(f"{output_key.stem}_provider.mp4"))
                 provider_path = self.gateway.download(result.output_urls[0], provider_key)
-                output_path = replace_audio_track(
+                output_path = trim_generated_duration(
                     provider_path,
-                    job.voice_track_path,
+                    segment.duration_sec,
                     provider_path.with_name(output_key.name),
-                    audio_start_sec=segment.start_sec,
-                    duration_sec=segment.duration_sec,
                 )
             elif is_workflow_route(job.route_id):
                 output_key = Path(segment.output_key)
