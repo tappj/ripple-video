@@ -1026,13 +1026,25 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                             if job_id in self.server.active_jobs:
                                 raise PipelineError("this job already has an active operation")
                             self.server.active_jobs.add(job_id)
+                        # Persist the transition before returning 202 so an immediate
+                        # client refresh cannot redraw the review grid while stitching
+                        # is already active in the background.
+                        store.set_job_state(job_id, JobState.STITCHING)
 
                         def finish() -> None:
                             try:
                                 with PhaseCStore(
                                     storage.path("orchestration.sqlite3")
                                 ) as worker_store:
-                                    stitch_job(worker_store, storage, job_id)
+                                    try:
+                                        stitch_job(worker_store, storage, job_id)
+                                    except Exception as error:
+                                        worker_store.record_event(
+                                            job_id,
+                                            "job.stitch_failed",
+                                            payload={"message": str(error)},
+                                        )
+                                        worker_store.set_job_state(job_id, JobState.REVIEW)
                             finally:
                                 with self.server.active_lock:
                                     self.server.active_jobs.discard(job_id)

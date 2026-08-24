@@ -106,6 +106,11 @@ def test_ripple_review_only_polls_live_states() -> None:
     assert "if(!live){stopUpdates();return}" in html
     assert "function renderRunning(data)" in html
     assert "function renderReview(data)" in html
+    assert "function renderAssembling()" in html
+    assert "Combining approved clips and validating the finished video." in html
+    assert "else if(data.state==='STITCHING'){renderAssembling()}" in html
+    assert "syncUpdates('STITCHING',true)" in html
+    assert "['GENERATING','RUNNING','STITCHING','DRAFT','CONFIRMED']" in html
     assert "original_url" not in html
 
 
