@@ -10,6 +10,43 @@ from cutdetect.ingest import probe_video
 from cutdetect.pipeline.runway_client import PipelineError
 
 
+def mute_video_track(source: Path, destination: Path) -> Path:
+    """Copy a segment's video stream while removing every audio stream."""
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise PipelineError("required executable not found on PATH: ffmpeg")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".mp4.part")
+    completed = subprocess.run(
+        [
+            executable,
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            str(temporary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PipelineError(f"could not create muted reference clip: {detail}")
+    temporary.replace(destination)
+    return destination
+
+
 def trim_generated_duration(generated: Path, duration_sec: float, destination: Path) -> Path:
     """Create a frame-accurate review copy ending at the source-group boundary."""
     if duration_sec <= 0:

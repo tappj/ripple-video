@@ -292,8 +292,9 @@ def test_preset_voice_is_created_per_clip_and_sent_before_video_generation(
             return f"runway://{role}"
 
         def submit(self, request: GenerationRequest) -> str:
+            assert request.reference_video == "runway://segment_0_muted_video"
             assert request.reference_audio == "runway://segment_0_voice"
-            assert "Use Audio 1 as the complete final audio for this clip" in request.prompt_text
+            assert "Audio 1 is the only audio source" in request.prompt_text
             return "video-task"
 
         def poll(self, _task_id: str) -> GenerationPoll:
@@ -310,6 +311,11 @@ def test_preset_voice_is_created_per_clip_and_sent_before_video_generation(
         destination.write_bytes(b"final video")
         return destination
 
+    def fake_mute(_source: Path, destination: Path) -> Path:
+        destination.write_bytes(b"muted video")
+        return destination
+
+    monkeypatch.setattr("cutdetect.pipeline.orchestration.mute_video_track", fake_mute)
     monkeypatch.setattr("cutdetect.pipeline.orchestration.trim_generated_duration", fake_trim)
     processor = VoiceProcessor()
     job = PhaseCWorker(

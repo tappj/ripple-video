@@ -63,9 +63,9 @@ _CLONE_VISUAL_GUARD = (
 )
 
 _CLONE_AUDIO = (
-    "AUDIO. Use Audio 1 as the complete final audio for this clip. Synchronize the person's "
-    "speech and mouth movement exactly to Audio 1. Audio 1 completely replaces and masks Video "
-    "1's original audio; do not mix or play the original audio."
+    "AUDIO. Video 1 is intentionally silent. Audio 1 is the only audio source: use it as the "
+    "complete final audio for this clip and synchronize the person's speech and mouth movement "
+    "exactly to it. Do not create, mix, or add any other audio."
 )
 
 _CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
@@ -74,7 +74,7 @@ _CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
 UGC_CLONE_V1 = PromptTemplate(
     id="ugc_clone_v1",
     label="UGC Clone",
-    version=11,
+    version=12,
     body="\n\n".join(
         (
             _CLONE_OPENING,
@@ -102,7 +102,7 @@ UGC_CLONE_V1 = PromptTemplate(
 UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
     id="ugc_clone_v1_no_voice",
     label="UGC Clone (source audio)",
-    version=11,
+    version=12,
     body=UGC_CLONE_V1.body.replace(f"\n\n{_CLONE_AUDIO}", ""),
     editable_by_user=False,
 )

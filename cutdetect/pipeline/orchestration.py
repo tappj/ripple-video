@@ -34,6 +34,7 @@ from cutdetect.pipeline.grouping import (
     whole_video_plan,
 )
 from cutdetect.pipeline.media import (
+    mute_video_track,
     preserve_source_audio,
     trim_generated_duration,
 )
@@ -1120,12 +1121,29 @@ class PhaseCWorker:
         job: JobRecord,
         segment: SegmentRecord,
         *,
+        prepared_video: Path | None = None,
         prepared_voice: Path | None = None,
     ) -> None:
         self.store.set_segment_state(job.id, segment.index, SegmentState.UPLOADING)
         current = self.now()
         try:
-            if segment.source_uri and _fresh(segment.source_uploaded_at, now=current):
+            if job.voice_preset_id is not None:
+                if prepared_video is None or not prepared_video.is_file():
+                    raise PipelineError("the muted reference clip is unavailable")
+                # Never reuse a cached source URI here: jobs created before this
+                # safeguard may have cached the original clip with its audio intact.
+                source_uri = self.gateway.upload(
+                    prepared_video,
+                    role=f"segment_{segment.index}_muted_video",
+                )
+                self.store.set_segment_state(
+                    job.id,
+                    segment.index,
+                    SegmentState.UPLOADING,
+                    source_uri=source_uri,
+                    source_uploaded_at=current,
+                )
+            elif segment.source_uri and _fresh(segment.source_uploaded_at, now=current):
                 source_uri = segment.source_uri
             else:
                 source_uri = self.gateway.upload(
@@ -1152,9 +1170,9 @@ class PhaseCWorker:
                     prepared_voice,
                     role=f"segment_{segment.index}_voice",
                 )
-            # Every cut receives a new Runway task with only its original source
-            # section and current prompt. No generated output is ever fed into a
-            # later request, including retries.
+            # Every cut receives a new Runway task with its matching source section,
+            # matching voice, and current prompt. No generated output is ever fed
+            # into a later request, including retries.
             request = GenerationRequest(
                 reference_video=source_uri,
                 reference_image=refreshed_job.target_face_uri,
@@ -1319,12 +1337,17 @@ class PhaseCWorker:
             if segment.state == SegmentState.PENDING
             and (segment.next_attempt_at is None or segment.next_attempt_at <= current)
         )
+        prepared_videos: dict[int, Path] = {}
         prepared_voices: dict[int, Path] = {}
         if job.voice_preset_id is not None and pending:
             if self.audio_processor is None:
                 raise PipelineError("the preset voice processor is unavailable")
             self.store.set_audio_state(job_id, "PROCESSING")
             for segment in pending:
+                muted_video = segment.input_path.with_name("input_muted.mp4")
+                if not muted_video.is_file():
+                    mute_video_track(segment.input_path, muted_video)
+                prepared_videos[segment.index] = muted_video
                 prepared_voices[segment.index] = self.audio_processor.convert_clip_voice(
                     segment.input_path,
                     preset_id=job.voice_preset_id,
@@ -1347,6 +1370,7 @@ class PhaseCWorker:
                 self._submit(
                     job,
                     segment,
+                    prepared_video=prepared_videos.get(segment.index),
                     prepared_voice=prepared_voices.get(segment.index),
                 )
 

@@ -56,8 +56,8 @@ def test_clone_prompt_uses_audio_reference_only_when_it_is_supplied() -> None:
     with_voice = strict_generation_prompt("", has_voice=True)
     without_voice = strict_generation_prompt("", has_voice=False)
 
-    assert "Use Audio 1 as the complete final audio for this clip" in with_voice
-    assert "completely replaces and masks Video 1's original audio" in with_voice
+    assert "Video 1 is intentionally silent" in with_voice
+    assert "Audio 1 is the only audio source" in with_voice
     assert "Audio 1" not in without_voice
     assert without_voice == UGC_CLONE_NO_VOICE_V1.body
     assert with_voice != without_voice
