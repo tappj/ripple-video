@@ -30,6 +30,8 @@ DELETED_SEEDANCE2_WORKFLOW_ID = "f28115cf-16bd-453f-9f3c-e766982951a4"
 PREVIOUS_SEEDANCE2_WORKFLOW_ID = "5f4cc974-e5c3-4d0a-8c1e-506eded573c7"
 VIDEO_ONLY_SEEDANCE2_WORKFLOW_ID = "de5bdc33-f4ee-48bd-a8b1-f6db7b84c182"
 DEFAULT_SEEDANCE2_WORKFLOW_ID = "fecc0662-a1e1-4941-b84a-76df0bde1e4f"
+PREVIOUS_HAILUO3_WORKFLOW_ID = "9172f9ee-e4e9-4a25-92e1-29779d698556"
+DEFAULT_HAILUO3_WORKFLOW_ID = "55cd8a57-dd96-4401-b9d0-0ab506130f77"
 REPLACED_SEEDANCE2_WORKFLOW_IDS = (
     DELETED_SEEDANCE2_WORKFLOW_ID,
     PREVIOUS_SEEDANCE2_WORKFLOW_ID,
@@ -42,6 +44,14 @@ def _seedance2_workflow_id() -> str:
     configured = os.environ.get("RUNWAY_SEEDANCE2_WORKFLOW_ID", "").strip()
     if not configured or configured in REPLACED_SEEDANCE2_WORKFLOW_IDS:
         return DEFAULT_SEEDANCE2_WORKFLOW_ID
+    return configured
+
+
+def _hailuo3_workflow_id() -> str:
+    """Use MiniMax H3 unless an environment override names a newer endpoint."""
+    configured = os.environ.get("RUNWAY_HAILUO3_WORKFLOW_ID", "").strip()
+    if not configured or configured == PREVIOUS_HAILUO3_WORKFLOW_ID:
+        return DEFAULT_HAILUO3_WORKFLOW_ID
     return configured
 
 
@@ -86,11 +96,14 @@ SEEDANCE25_WORKFLOW = WorkflowSpec(
 )
 HAILUO3_WORKFLOW = WorkflowSpec(
     model="hailuo3",
-    workflow_id=os.environ.get("RUNWAY_HAILUO3_WORKFLOW_ID")
-    or "9172f9ee-e4e9-4a25-92e1-29779d698556",
-    output_node_id="ccfb49cf-4dd0-41ba-98a5-817dc6ee363d",
+    workflow_id=_hailuo3_workflow_id(),
+    output_node_id="de44988c-97a7-4133-b942-fca95c7e4e99",
     duration_sec=15,
     resolution="768P",
+    reference_video_node_id="6e4db3d7-8aa5-4def-abdb-6b0ec607f25e",
+    target_face_node_id="97e7f919-1eb5-4fc1-ae62-388e404cd6b7",
+    prompt_node_id="0c6c3f68-da4d-40fb-a0a0-f7ef86644435",
+    target_voice_node_id="f8b888b1-1746-4b91-a05a-548c7a1350b5",
 )
 PRODUCT_CLONE_WORKFLOW = WorkflowSpec(
     model="hailuo3",
@@ -125,6 +138,10 @@ for replaced_workflow_id in REPLACED_SEEDANCE2_WORKFLOW_IDS:
     WORKFLOW_SPECS_BY_ROUTE[
         WORKFLOW_ROUTE_PREFIX + replaced_workflow_id
     ] = SEEDANCE2_WORKFLOW
+# Existing MiniMax jobs remain retryable after replacing the published graph.
+WORKFLOW_SPECS_BY_ROUTE[
+    WORKFLOW_ROUTE_PREFIX + PREVIOUS_HAILUO3_WORKFLOW_ID
+] = HAILUO3_WORKFLOW
 
 # Backward-compatible names used by persisted legacy jobs and external imports.
 TALKING_WORKFLOW_ID = LEGACY_TALKING_WORKFLOW.workflow_id

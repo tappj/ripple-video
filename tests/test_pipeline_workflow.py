@@ -7,8 +7,11 @@ from cutdetect.pipeline.runway_client import GenerationRequest, JsonlCallLogger,
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import UGC_CLONE_V1
 from cutdetect.pipeline.workflow_client import (
+    DEFAULT_HAILUO3_WORKFLOW_ID,
     DEFAULT_SEEDANCE2_WORKFLOW_ID,
     DELETED_SEEDANCE2_WORKFLOW_ID,
+    HAILUO3_WORKFLOW,
+    PREVIOUS_HAILUO3_WORKFLOW_ID,
     PREVIOUS_SEEDANCE2_WORKFLOW_ID,
     PRODUCT_CLONE_WORKFLOW,
     PROMPT_NODE_ID,
@@ -22,6 +25,20 @@ from cutdetect.pipeline.workflow_client import (
     RunwayWorkflowGateway,
     workflow_spec_for_route,
 )
+
+
+def test_minimax_h3_workflow_maps_all_published_inputs_and_old_route() -> None:
+    spec = HAILUO3_WORKFLOW
+
+    assert spec.workflow_id == DEFAULT_HAILUO3_WORKFLOW_ID
+    assert spec.reference_video_node_id == "6e4db3d7-8aa5-4def-abdb-6b0ec607f25e"
+    assert spec.target_face_node_id == "97e7f919-1eb5-4fc1-ae62-388e404cd6b7"
+    assert spec.prompt_node_id == "0c6c3f68-da4d-40fb-a0a0-f7ef86644435"
+    assert spec.target_voice_node_id == "f8b888b1-1746-4b91-a05a-548c7a1350b5"
+    assert spec.output_node_id == "de44988c-97a7-4133-b942-fca95c7e4e99"
+    assert workflow_spec_for_route(
+        "workflow:" + PREVIOUS_HAILUO3_WORKFLOW_ID
+    ) is spec
 
 
 def test_republished_seedance2_workflow_maps_its_target_audio_input() -> None:

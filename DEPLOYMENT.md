@@ -25,9 +25,9 @@ video, target face, optional target voice, and prompt, then exposes its generate
 
 | UI choice | Published Workflow ID |
 |---|---|
-| Seedance 2.0 | `f28115cf-16bd-453f-9f3c-e766982951a4` |
-| Seedance 2.5 | `4af4fdf6-a371-4a73-b02d-fdbf116186d5` |
-| Hailuo 3.0 | `9172f9ee-e4e9-4a25-92e1-29779d698556` |
+| Seedance 2.0 | `fecc0662-a1e1-4941-b84a-76df0bde1e4f` |
+| Seedance 2.5 (disabled) | `4af4fdf6-a371-4a73-b02d-fdbf116186d5` |
+| MiniMax H3 | `55cd8a57-dd96-4401-b9d0-0ab506130f77` |
 
 All three graphs use 9:16 output and a 15-second maximum. Ripple overrides the exposed prompt for
 every independent clip and trims each returned video to the source clip's exact duration.
@@ -71,9 +71,9 @@ are in place.
 | `RUNWAYML_API_SECRET` | none | Server-only Runway developer API credential |
 | `ELEVENLABS_API_KEY` | none | Server-only Scribe v2 transcript credential; generation falls back safely if absent |
 | `RUNWAY_SEEDANCE2_WORKFLOW_ID` | published ID above | Seedance 2.0 Workflow |
-| `RUNWAY_SEEDANCE25_WORKFLOW_ID` | published ID above | Seedance 2.5 Workflow |
-| `RUNWAY_HAILUO3_WORKFLOW_ID` | published ID above | Hailuo 3.0 Workflow |
-| `RUNWAY_PRODUCT_CLONE_WORKFLOW_ID` | published ID above | UGC product-clone Hailuo 3 Workflow |
+| `RUNWAY_SEEDANCE25_WORKFLOW_ID` | published ID above | Disabled Seedance 2.5 Workflow |
+| `RUNWAY_HAILUO3_WORKFLOW_ID` | published ID above | MiniMax H3 Workflow |
+| `RUNWAY_PRODUCT_CLONE_WORKFLOW_ID` | published ID above | UGC product-clone MiniMax H3 Workflow |
 | `RIPPLE_ACCESS_PASSWORD` | none | Optional shared beta password |
 | `RIPPLE_MAX_UPLOAD_MIB` | `256` | Maximum size of each uploaded asset |
 | `RIPPLE_DATA_DIR` | `/data/ripple` | Jobs, SQLite, uploads, and output media |

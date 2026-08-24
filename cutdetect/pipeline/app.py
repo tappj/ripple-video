@@ -80,8 +80,8 @@ class PipelineStudioConfig:
 def _boot_payload() -> dict[str, object]:
     labels = {
         "seedance2": "Seedance 2.0",
-        "seedance2_5": "Seedance 2.5",
-        "hailuo3": "Hailuo 3.0",
+        "seedance2_5": "Seedance 2.5 — coming soon",
+        "hailuo3": "MiniMax H3",
     }
     workflows = {
         model_id: workflow_spec_for_model(cast(RunwayReferenceModel, model_id))
@@ -96,6 +96,7 @@ def _boot_payload() -> dict[str, object]:
                 "defaultRatio": "9:16",
                 "defaultResolution": workflows[model_id].resolution,
                 "routeLabel": "Workflow API",
+                "disabled": model_id == "seedance2_5",
                 "minDuration": caps.min_duration_s,
                 "maxDuration": caps.max_duration_s,
                 "supportsInternalCuts": caps.supports_internal_cuts,
@@ -112,7 +113,7 @@ def _boot_payload() -> dict[str, object]:
                 "resolution": "720p",
             },
             "workflow": {
-                "label": "Hailuo 3",
+                "label": "MiniMax H3",
                 "routeLabel": "Workflow API",
                 "model": "hailuo3",
                 "ratio": "9:16",
@@ -231,6 +232,21 @@ def _start_stitch_operation(server: _PipelineServer, job_id: str) -> bool:
             job = store.job(job_id)
             if job.state not in {JobState.REVIEW, JobState.STITCHING}:
                 raise PipelineError(f"job {job_id} cannot stitch from {job.state.value}")
+            segments = store.segments(job_id)
+            if not segments or any(
+                segment.state != SegmentState.APPROVED for segment in segments
+            ):
+                raise PipelineError(
+                    "assembly is locked until every generated clip is approved"
+                )
+            for segment in segments:
+                if segment.final_output_key is None or not storage.path(
+                    segment.final_output_key
+                ).is_file():
+                    raise PipelineError(
+                        "an approved clip has expired from this free host; "
+                        "regenerate it before assembly"
+                    )
             store.set_job_state(job_id, JobState.STITCHING)
     except Exception:
         with server.active_lock:
@@ -480,9 +496,17 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             review = ReviewService(store=store, storage=storage).snapshot(job_id)
             segments = store.segments(job_id)
             enriched = []
+            script_count = 0
             for segment in segments:
                 raw = storage.path(segment.output_key)
                 final = storage.path(segment.final_output_key) if segment.final_output_key else None
+                transcript = storage.path(
+                    f"jobs/{job_id}/segments/{segment.index}/audio/transcript.txt"
+                )
+                script_attached = transcript.is_file() and bool(
+                    transcript.read_text(encoding="utf-8").strip()
+                )
+                script_count += int(script_attached)
                 review_media = None
                 playback_error = None
                 review_source = final if final is not None and final.is_file() else raw
@@ -511,6 +535,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                             else None
                         ),
                         "playback_error": playback_error,
+                        "script_attached": script_attached,
                     }
                 )
             job = store.job(job_id)
@@ -519,6 +544,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 "approved_count": review["approved_count"],
                 "can_stitch": review["can_stitch"],
                 "custom_voice_fix": review["custom_voice_fix"],
+                "script_count": script_count,
+                "script_expected": job.voice_preset_id is not None,
                 "segments": enriched,
                 "final_url": (
                     self._file_url(storage.path(job.final_output_key))
@@ -529,14 +556,20 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     self._file_url(storage.path(job.qc_output_key)) if job.qc_output_key else None
                 ),
             }
-            worker_errors = [
+            operation_errors = [
                 event
                 for event in store.events_since(job_id)
-                if event.get("event") == "job.worker_error"
+                if event.get("event") in {"job.worker_error", "job.stitch_failed"}
             ]
-            if worker_errors:
-                latest = cast(dict[str, object], worker_errors[-1].get("payload", {}))
-                payload["error"] = str(latest.get("message", "generation worker stopped"))
+            if operation_errors:
+                latest_event = operation_errors[-1]
+                latest = cast(dict[str, object], latest_event.get("payload", {}))
+                fallback = (
+                    "assembly failed"
+                    if latest_event.get("event") == "job.stitch_failed"
+                    else "generation worker stopped"
+                )
+                payload["error"] = str(latest.get("message", fallback))
             manifest = storage.path(f"jobs/{job_id}/job.json")
             if manifest.is_file():
                 value = json.loads(manifest.read_text(encoding="utf-8"))
@@ -729,6 +762,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 selected_route = PRODUCT_CLONE_WORKFLOW.route_id
             else:
                 selected_model = str(body.get("model", "seedance2"))
+                if selected_model == "seedance2_5":
+                    raise PipelineError("Seedance 2.5 is coming soon and is not selectable yet")
                 selected_resolution = (
                     str(body.get("resolution")) if body.get("resolution") else None
                 )

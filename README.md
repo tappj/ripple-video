@@ -42,7 +42,7 @@ RUNWAYML_API_SECRET=
 ELEVENLABS_API_KEY=
 RUNWAY_SEEDANCE2_WORKFLOW_ID=fecc0662-a1e1-4941-b84a-76df0bde1e4f
 RUNWAY_SEEDANCE25_WORKFLOW_ID=4af4fdf6-a371-4a73-b02d-fdbf116186d5
-RUNWAY_HAILUO3_WORKFLOW_ID=9172f9ee-e4e9-4a25-92e1-29779d698556
+RUNWAY_HAILUO3_WORKFLOW_ID=55cd8a57-dd96-4401-b9d0-0ab506130f77
 RUNWAY_PRODUCT_CLONE_WORKFLOW_ID=0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0
 ```
 
@@ -125,7 +125,8 @@ limits are the final spending control:
 .venv311/bin/cutdetect pipeline run-job JOB_ID --max-credits ESTIMATED_CREDITS
 ```
 
-New Hailuo 3, Seedance 2.0, and Seedance 2.5 jobs each use a dedicated published Runway Workflow.
+New MiniMax H3 and Seedance 2.0 jobs each use a dedicated published Runway Workflow.
+Seedance 2.5 remains visible as a disabled coming-soon choice.
 Every Workflow is fixed to 9:16 and a 15-second maximum; Ripple sends each source group as an
 independent invocation and trims the result to the source group's exact duration. The worker uploads
 the face and voice once, gives every clip a separate source upload and a brand-new invocation,
@@ -136,7 +137,7 @@ resumable.
 
 The **UGC product test** tab provides a controlled two-route comparison. It sends the same
 source cut, avatar image, product image, and prompt either to Seedance 2.0 through the
-`ripple-seedance-2` Model Router or to Hailuo 3 through the published product-clone Workflow.
+`ripple-seedance-2` Model Router or to MiniMax H3 through the published product-clone Workflow.
 Each selection creates fresh, independent tasks; a result from one route is never used as
 context for the other.
 

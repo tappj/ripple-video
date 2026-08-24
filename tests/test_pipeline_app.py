@@ -38,7 +38,7 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "New product" in html
     assert "Comparison route" in html
     assert '"routeLabel":"Model Router API"' in html
-    assert '"label":"Hailuo 3"' in html
+    assert '"label":"MiniMax H3"' in html
     assert "ugc_product_clone_v1" in html
     assert "0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0" not in html
     assert "Optional · preserve original audio" in html
@@ -58,8 +58,10 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "URL.createObjectURL(file)" in html
     assert "Fresh task per clip" in html
     assert "4af4fdf6-a371-4a73-b02d-fdbf116186d5" not in html
-    assert "Seedance 2.5" in html
-    assert "Hailuo 3.0" in html
+    assert "Seedance 2.5 \\u2014 coming soon" in html
+    assert '"disabled":true' in html
+    assert "option.disabled=Boolean(caps.disabled)" in html
+    assert "MiniMax H3" in html
     assert "Workflow API" in html
     assert "Generation route" in html
     assert "Recreate Video 1 as one continuous take at 1.0x speed" in html
@@ -88,6 +90,9 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Reconnecting" in html
     assert "Retry current step" in html
     assert "Reusing completed clips and saved audio processing." in html
+    assert "scripts attached" in html
+    assert "Approving all clips…" in html
+    assert "data.error||" in html
 
 
 def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -> None:
