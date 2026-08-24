@@ -23,8 +23,10 @@ from cutdetect.pipeline.runway_client import (
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
 from cutdetect.pipeline.templates import (
+    MAX_PROMPT_CHARS,
     UGC_CLONE_NO_VOICE_V1,
     UGC_CLONE_V1,
+    append_clip_script,
     strict_generation_prompt,
 )
 from cutdetect.pipeline.workflow_client import (
@@ -63,6 +65,15 @@ def test_clone_prompt_uses_audio_reference_only_when_it_is_supplied() -> None:
     assert with_voice != without_voice
     assert "Preserve every subtitle" in with_voice
     assert "No on-screen text" not in with_voice
+
+
+def test_exact_clip_script_is_quoted_at_the_end_without_exceeding_prompt_limit() -> None:
+    prompt = strict_generation_prompt("x" * 2000)
+    scripted = append_clip_script(prompt, 'I said "Ripple" exactly.')
+
+    assert scripted.endswith('SCRIPT: "I said \\"Ripple\\" exactly."')
+    assert scripted.startswith(UGC_CLONE_V1.body)
+    assert len(scripted) <= MAX_PROMPT_CHARS
 
 
 def test_either_clone_base_is_recognised_as_an_unedited_default() -> None:

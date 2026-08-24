@@ -6,6 +6,9 @@ import json
 import math
 import random
 import time
+import urllib.error
+import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypeVar, cast
@@ -44,7 +47,19 @@ SPEECH_TO_SPEECH_MAX_SEC = 300.0
 VOICE_PREVIEW_TEXT = "This is your selected voice for Ripple."
 AUDIO_SUBMISSION_MAX_ATTEMPTS = 4
 AUDIO_RETRY_BASE_DELAY_SEC = 1.0
+ELEVENLABS_TRANSCRIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+TRANSCRIPTION_MAX_ATTEMPTS = 4
+TRANSCRIPTION_RETRY_BASE_DELAY_SEC = 1.0
+MAX_CLIP_TRANSCRIPT_CHARS = 1000
 _Result = TypeVar("_Result")
+
+
+class _TranscriptionRequestError(Exception):
+    """HTTP-shaped failure used by the bounded Scribe retry loop."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def validate_voice_preset(value: str | None) -> str | None:
@@ -72,12 +87,14 @@ class RunwayAudioProcessor:
         api_key: str,
         logger: JsonlCallLogger,
         storage: LocalDiskStorage,
+        transcription_api_key: str = "",
     ) -> None:
         if not api_key:
             raise PipelineError("RUNWAYML_API_SECRET is not set")
         self._client = RunwayML(api_key=api_key, max_retries=0)
         self._logger = logger
         self._storage = storage
+        self._transcription_api_key = transcription_api_key.strip()
 
     def _call_with_retry(
         self,
@@ -175,6 +192,158 @@ class RunwayAudioProcessor:
 
     def _download(self, url: str, key: str) -> Path:
         return self._storage.download_https(url, key)
+
+    def _request_transcript(self, audio: Path) -> str:
+        """Transcribe one isolated source track with verbatim Scribe settings."""
+        boundary = f"ripple-{uuid.uuid4().hex}"
+        content_type = "audio/mp4" if audio.suffix.lower() == ".m4a" else "audio/mpeg"
+        chunks: list[bytes] = []
+
+        def field(name: str, value: str) -> None:
+            chunks.extend(
+                (
+                    f"--{boundary}\r\n".encode(),
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                    value.encode(),
+                    b"\r\n",
+                )
+            )
+
+        field("model_id", "scribe_v2")
+        field("tag_audio_events", "false")
+        field("num_speakers", "1")
+        field("timestamps_granularity", "none")
+        field("diarize", "false")
+        field("no_verbatim", "false")
+        field("temperature", "0")
+        chunks.extend(
+            (
+                f"--{boundary}\r\n".encode(),
+                (
+                    'Content-Disposition: form-data; name="file"; '
+                    f'filename="{audio.name}"\r\n'
+                ).encode(),
+                f"Content-Type: {content_type}\r\n\r\n".encode(),
+                audio.read_bytes(),
+                b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            )
+        )
+        request = urllib.request.Request(
+            ELEVENLABS_TRANSCRIPTION_URL,
+            data=b"".join(chunks),
+            headers={
+                "xi-api-key": self._transcription_api_key,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "ripple-video/0.1",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload: object = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            raise _TranscriptionRequestError(
+                f"ElevenLabs transcription returned HTTP {error.code}",
+                status_code=error.code,
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise _TranscriptionRequestError(
+                "ElevenLabs transcription could not be reached"
+            ) from error
+        except json.JSONDecodeError as error:
+            raise _TranscriptionRequestError(
+                "ElevenLabs transcription returned an invalid response"
+            ) from error
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise _TranscriptionRequestError(
+                "ElevenLabs transcription returned no transcript"
+            )
+        return " ".join(payload["text"].split())
+
+    def transcribe_clip(
+        self,
+        clip_video: Path,
+        *,
+        job_id: str,
+        segment_index: int,
+    ) -> str | None:
+        """Return a cached per-clip script without making transcription a hard dependency."""
+        base = f"jobs/{job_id}/segments/{segment_index}/audio"
+        transcript = self._storage.path(f"{base}/transcript.txt")
+        if transcript.is_file():
+            cached = " ".join(transcript.read_text(encoding="utf-8").split())
+            return cached or None
+        if not self._transcription_api_key:
+            self._logger.write(
+                "elevenlabs.transcription.skipped",
+                segment_index=segment_index,
+                reason="ELEVENLABS_API_KEY is not set",
+            )
+            return None
+
+        # The isolated source is the ground-truth wording. Transcribing the converted
+        # voice could reinforce a word that speech-to-speech happened to distort.
+        isolated = self._storage.path(f"{base}/isolated.mp3")
+        source_audio = self._storage.path(f"{base}/source.m4a")
+        transcription_input = isolated if isolated.is_file() else source_audio
+        if not transcription_input.is_file():
+            extract_audio_track(clip_video, source_audio)
+            transcription_input = source_audio
+
+        for attempt in range(1, TRANSCRIPTION_MAX_ATTEMPTS + 1):
+            started = time.monotonic()
+            try:
+                text = self._request_transcript(transcription_input)
+            except Exception as error:
+                status = getattr(error, "status_code", None)
+                retryable = status in {408, 409, 429} or (
+                    isinstance(status, int) and status >= 500
+                )
+                self._logger.write(
+                    "elevenlabs.transcription.failed",
+                    segment_index=segment_index,
+                    attempt=attempt,
+                    max_attempts=TRANSCRIPTION_MAX_ATTEMPTS,
+                    status_code=status,
+                    retryable=retryable,
+                    error_type=type(error).__name__,
+                    latency_sec=time.monotonic() - started,
+                )
+                if not retryable or attempt == TRANSCRIPTION_MAX_ATTEMPTS:
+                    self._logger.write(
+                        "elevenlabs.transcription.skipped",
+                        segment_index=segment_index,
+                        reason="transcription remained unavailable",
+                    )
+                    return None
+                base_delay = TRANSCRIPTION_RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1))
+                time.sleep(base_delay + random.uniform(0, base_delay * 0.5))
+                continue
+            if not text:
+                self._logger.write(
+                    "elevenlabs.transcription.skipped",
+                    segment_index=segment_index,
+                    reason="isolated clip contains no detected speech",
+                )
+                return None
+            if len(text) > MAX_CLIP_TRANSCRIPT_CHARS:
+                self._logger.write(
+                    "elevenlabs.transcription.skipped",
+                    segment_index=segment_index,
+                    reason="transcript is implausibly long for one Ripple clip",
+                    character_count=len(text),
+                )
+                return None
+            transcript.write_text(text + "\n", encoding="utf-8")
+            self._logger.write(
+                "elevenlabs.transcription.complete",
+                segment_index=segment_index,
+                character_count=len(text),
+                latency_sec=time.monotonic() - started,
+            )
+            return text
+        return None
 
     def convert_clip_voice(
         self,

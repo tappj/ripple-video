@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 
@@ -56,6 +57,7 @@ _CLONE_MOUTH = (
 
 # Seedance 2 rejects any promptText longer than this.
 MAX_PROMPT_CHARS = 3500
+_ADDITIONAL_DIRECTION = "\n\nADDITIONAL DIRECTION. "
 
 _CLONE_VISUAL_GUARD = (
     "Preserve every subtitle, caption, graphic, logo, and piece of on-screen text from Video 1 "
@@ -167,10 +169,38 @@ def _apply_base(base: str, direction: str, *, defaults: tuple[str, ...]) -> str:
     cleaned = direction.strip()
     if not cleaned or cleaned in defaults or cleaned in _SUPERSEDED_DEFAULT_PROMPTS:
         return base
-    prefix = f"{base}\n\nADDITIONAL DIRECTION. "
+    prefix = f"{base}{_ADDITIONAL_DIRECTION}"
     # Seedance rejects a prompt over its character limit outright, so the base
     # constraints keep their room and only the user's direction gives way.
     return f"{prefix}{cleaned}"[:MAX_PROMPT_CHARS].rstrip()
+
+
+def append_clip_script(prompt: str, transcript: str | None) -> str:
+    """Append one exact, quoted clip transcript while preserving prompt limits."""
+    cleaned = " ".join((transcript or "").split())
+    if not cleaned:
+        return prompt
+    suffix = f"\n\nSCRIPT: {json.dumps(cleaned, ensure_ascii=False)}"
+    prompt_budget = MAX_PROMPT_CHARS - len(suffix)
+    if prompt_budget <= 0:
+        return prompt
+    if len(prompt) > prompt_budget:
+        # The mandatory clone instructions keep priority. Only optional user direction
+        # is shortened to make room for the per-clip script.
+        base, marker, direction = prompt.partition(_ADDITIONAL_DIRECTION)
+        if marker and len(base) <= prompt_budget:
+            direction_budget = prompt_budget - len(base) - len(marker)
+            prompt = (
+                f"{base}{marker}{direction[:max(0, direction_budget)]}".rstrip()
+                if direction_budget >= 0
+                else base
+            )
+        else:
+            # A 15-second transcript cannot normally reach this branch. If a provider
+            # returns implausibly long text, keep generation valid instead of exceeding
+            # the model's hard prompt ceiling.
+            return prompt
+    return f"{prompt.rstrip()}{suffix}"
 
 
 def strict_generation_prompt(direction: str, *, has_voice: bool = True) -> str:

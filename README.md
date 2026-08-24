@@ -39,6 +39,7 @@ it is started, without executing it as shell code. Copy the variable names from
 
 ```dotenv
 RUNWAYML_API_SECRET=
+ELEVENLABS_API_KEY=
 RUNWAY_SEEDANCE2_WORKFLOW_ID=fecc0662-a1e1-4941-b84a-76df0bde1e4f
 RUNWAY_SEEDANCE25_WORKFLOW_ID=4af4fdf6-a371-4a73-b02d-fdbf116186d5
 RUNWAY_HAILUO3_WORKFLOW_ID=9172f9ee-e4e9-4a25-92e1-29779d698556
@@ -47,6 +48,11 @@ RUNWAY_PRODUCT_CLONE_WORKFLOW_ID=0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0
 
 Never commit `.env`, paste keys into documentation, or send them through chat. Exported
 environment variables take precedence over values in `.env`.
+
+`ELEVENLABS_API_KEY` enables per-clip Scribe v2 transcription. Ripple transcribes the
+isolated original speech, caches it with that clip, and appends it to only the matching
+video prompt. If the key or transcription service is unavailable, generation continues
+with the transformed audio and the established prompt.
 
 ## Runway regeneration pipeline
 

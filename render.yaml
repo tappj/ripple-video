@@ -7,6 +7,8 @@ services:
     envVars:
       - key: RUNWAYML_API_SECRET
         sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
       - key: RUNWAY_SEEDANCE_ROUTER_CONFIG_ID
         value: ripple-seedance-2
       - key: RUNWAY_SEEDANCE2_WORKFLOW_ID

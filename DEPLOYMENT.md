@@ -46,8 +46,9 @@ local coding session:
 
 3. Create or sign in to a Render account, choose **New → Blueprint**, connect the private
    `ripple-video` repository, and approve the detected `render.yaml`.
-4. When Render prompts for `RUNWAYML_API_SECRET`, paste it into the secret field. Never put the key
-   in GitHub, `render.yaml`, a URL, or browser code.
+4. When Render prompts for secrets, add `RUNWAYML_API_SECRET` and `ELEVENLABS_API_KEY`.
+   The ElevenLabs key needs Speech to Text access for Scribe v2. Never put either key in GitHub,
+   `render.yaml`, a URL, or browser code.
 5. Wait for the deploy to become healthy, then open the assigned `onrender.com` URL.
 6. In the Render service's Environment page, reveal/copy the generated
    `RIPPLE_ACCESS_PASSWORD`. The browser login is:
@@ -68,6 +69,7 @@ are in place.
 | Variable | Default in container | Purpose |
 |---|---|---|
 | `RUNWAYML_API_SECRET` | none | Server-only Runway developer API credential |
+| `ELEVENLABS_API_KEY` | none | Server-only Scribe v2 transcript credential; generation falls back safely if absent |
 | `RUNWAY_SEEDANCE2_WORKFLOW_ID` | published ID above | Seedance 2.0 Workflow |
 | `RUNWAY_SEEDANCE25_WORKFLOW_ID` | published ID above | Seedance 2.5 Workflow |
 | `RUNWAY_HAILUO3_WORKFLOW_ID` | published ID above | Hailuo 3.0 Workflow |

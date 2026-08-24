@@ -206,12 +206,14 @@ def test_detection_runs_in_secret_scrubbed_subprocess(
         return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
 
     monkeypatch.setenv("RUNWAYML_API_SECRET", "must-not-enter-worker")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "also-must-not-enter-worker")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     predictions = _isolated_detection(video, output, tmp_path / "cache", timeout_sec=30)
 
     assert predictions == output / "predictions.json"
     assert "RUNWAYML_API_SECRET" not in captured["environment"]
+    assert "ELEVENLABS_API_KEY" not in captured["environment"]
     assert captured["command"][:3] == [captured["command"][0], "-m", "cutdetect"]
 
 

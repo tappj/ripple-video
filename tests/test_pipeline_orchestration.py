@@ -287,6 +287,18 @@ def test_preset_voice_is_created_per_clip_and_sent_before_video_generation(
             track.write_bytes(b"voice")
             return track
 
+        def transcribe_clip(
+            self,
+            clip_video: Path,
+            *,
+            job_id: str,
+            segment_index: int,
+        ) -> str:
+            assert clip_video == segment_path
+            assert job_id == "preset-job"
+            assert segment_index == 0
+            return "These are this clip's exact words."
+
     class Gateway:
         def upload(self, _path: Path, *, role: str) -> str:
             return f"runway://{role}"
@@ -295,6 +307,9 @@ def test_preset_voice_is_created_per_clip_and_sent_before_video_generation(
             assert request.reference_video == "runway://segment_0_muted_video"
             assert request.reference_audio == "runway://segment_0_voice"
             assert "Audio 1 is the only audio source" in request.prompt_text
+            assert request.prompt_text.endswith(
+                'SCRIPT: "These are this clip\'s exact words."'
+            )
             return "video-task"
 
         def poll(self, _task_id: str) -> GenerationPoll:

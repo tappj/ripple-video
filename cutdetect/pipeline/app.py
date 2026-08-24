@@ -301,6 +301,7 @@ def _isolated_detection(
     """Run memory-intensive detection in a process that exits before encoding."""
     environment = os.environ.copy()
     environment.pop("RUNWAYML_API_SECRET", None)
+    environment.pop("ELEVENLABS_API_KEY", None)
     environment.pop("RIPPLE_ACCESS_PASSWORD", None)
     environment.update(
         MALLOC_ARENA_MAX="1",
@@ -999,6 +1000,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                             api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
                             logger=gateway_logger,
                             storage=storage,
+                            transcription_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
                         )
                         if job.voice_preset_id is not None
                         else None

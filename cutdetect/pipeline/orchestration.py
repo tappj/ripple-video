@@ -46,7 +46,7 @@ from cutdetect.pipeline.runway_client import (
     RunwayReferenceModel,
 )
 from cutdetect.pipeline.storage import LocalDiskStorage
-from cutdetect.pipeline.templates import UGC_CLONE_V1, generation_prompt
+from cutdetect.pipeline.templates import UGC_CLONE_V1, append_clip_script, generation_prompt
 from cutdetect.pipeline.workflow_client import (
     is_workflow_route,
     workflow_spec_for_model,
@@ -128,6 +128,14 @@ class VoiceProcessor(Protocol):
         job_id: str,
         segment_index: int,
     ) -> Path: ...
+
+    def transcribe_clip(
+        self,
+        clip_video: Path,
+        *,
+        job_id: str,
+        segment_index: int,
+    ) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1123,6 +1131,7 @@ class PhaseCWorker:
         *,
         prepared_video: Path | None = None,
         prepared_voice: Path | None = None,
+        clip_transcript: str | None = None,
     ) -> None:
         self.store.set_segment_state(job.id, segment.index, SegmentState.UPLOADING)
         current = self.now()
@@ -1173,19 +1182,20 @@ class PhaseCWorker:
             # Every cut receives a new Runway task with its matching source section,
             # matching voice, and current prompt. No generated output is ever fed
             # into a later request, including retries.
+            prompt = generation_prompt(
+                job.prompt_template_id,
+                segment.prompt_override or job.prompt,
+                # An "Audio 1" clause with no audio reference attached invites the
+                # model to invent a voice, so the base prompt tracks the references
+                # that are actually submitted.
+                has_voice=reference_audio_uri is not None,
+            )
             request = GenerationRequest(
                 reference_video=source_uri,
                 reference_image=refreshed_job.target_face_uri,
                 reference_audio=reference_audio_uri,
                 reference_product=refreshed_job.target_product_uri,
-                prompt_text=generation_prompt(
-                    job.prompt_template_id,
-                    segment.prompt_override or job.prompt,
-                    # An "Audio 1" clause with no audio reference attached invites the
-                    # model to invent a voice, so the base prompt tracks the references
-                    # that are actually submitted.
-                    has_voice=reference_audio_uri is not None,
-                ),
+                prompt_text=append_clip_script(prompt, clip_transcript),
                 duration=segment.requested_duration_sec,
                 ratio=job.ratio,
                 reference_video_duration_sec=segment.duration_sec,
@@ -1339,6 +1349,7 @@ class PhaseCWorker:
         )
         prepared_videos: dict[int, Path] = {}
         prepared_voices: dict[int, Path] = {}
+        prepared_transcripts: dict[int, str] = {}
         if job.voice_preset_id is not None and pending:
             if self.audio_processor is None:
                 raise PipelineError("the preset voice processor is unavailable")
@@ -1354,6 +1365,24 @@ class PhaseCWorker:
                     job_id=job.id,
                     segment_index=segment.index,
                 )
+                try:
+                    transcript = self.audio_processor.transcribe_clip(
+                        segment.input_path,
+                        job_id=job.id,
+                        segment_index=segment.index,
+                    )
+                except Exception as error:
+                    # Transcription improves dictation, but must never strand a paid
+                    # voice conversion or prevent the established video path from running.
+                    self.store.record_event(
+                        job_id,
+                        "segment.transcription_skipped",
+                        segment_index=segment.index,
+                        payload={"error_type": type(error).__name__},
+                    )
+                else:
+                    if transcript:
+                        prepared_transcripts[segment.index] = transcript
             job = self.store.set_audio_state(job_id, "READY")
         if pending:
             try:
@@ -1372,6 +1401,7 @@ class PhaseCWorker:
                     segment,
                     prepared_video=prepared_videos.get(segment.index),
                     prepared_voice=prepared_voices.get(segment.index),
+                    clip_transcript=prepared_transcripts.get(segment.index),
                 )
 
         active_states = {
