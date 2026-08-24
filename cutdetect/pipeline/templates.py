@@ -65,51 +65,7 @@ _CLONE_MUSIC_EXCLUSION = " No new, added, or replacement music."
 UGC_CLONE_V1 = PromptTemplate(
     id="ugc_clone_v1",
     label="UGC Clone",
-    version=8,
-    body="\n\n".join(
-        (
-            _CLONE_OPENING,
-            _CLONE_IDENTITY,
-            _CLONE_FRAME,
-            _CLONE_MOTION,
-            (
-                "SPEECH. Video 1 is the only source of the words. Speak Video 1's dialogue "
-                "verbatim, in its language, word for word and in the same order, starting and "
-                "ending on Video 1's timings, with the same pace, pauses, emphasis, and "
-                "breaths. Lips match every syllable."
-            ),
-            (
-                "VOICE. Audio 1 provides vocal identity only - timbre, pitch, and accent. "
-                "Audio 1 is a voice sample, not a script; its words never appear in the "
-                "output. One consistent voice, tone, and recording quality carries the whole "
-                "clip."
-            ),
-            (
-                "SOUND. The only audio to generate is the person's voice and the sound effects "
-                "that match on-screen action. Video 1's existing background audio carries "
-                "through underneath it exactly as recorded, at its original level and in its "
-                "original mix - any music already in Video 1 plays on unchanged and uncovered. "
-                "Compose no new music, lay no track over what is already there, and swap "
-                "nothing out for a different one."
-            ),
-            (
-                "ENDING. The dialogue finishes before the final frame, then hold the closing "
-                "moment naturally - no filler words, repeated phrases, or invented gestures to "
-                "fill time."
-            ),
-            f"{_CLONE_EXCLUSIONS}{_CLONE_MUSIC_EXCLUSION}",
-        )
-    ),
-    editable_by_user=True,
-)
-
-# Ripple remuxes the original audio whenever no target voice is supplied, so this
-# variant drops every audio instruction and keeps only the articulation that has
-# to stay locked to the source dialogue.
-UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
-    id="ugc_clone_v1_no_voice",
-    label="UGC Clone (source audio)",
-    version=8,
+    version=9,
     body="\n\n".join(
         (
             _CLONE_OPENING,
@@ -128,6 +84,16 @@ UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
             _CLONE_EXCLUSIONS,
         )
     ),
+    editable_by_user=True,
+)
+
+# Audio is now mastered outside the video model, so both legacy call paths use the
+# same visual/lip-sync-only prompt and all provider-generated audio is discarded.
+UGC_CLONE_NO_VOICE_V1 = PromptTemplate(
+    id="ugc_clone_v1_no_voice",
+    label="UGC Clone (source audio)",
+    version=9,
+    body=UGC_CLONE_V1.body,
     editable_by_user=False,
 )
 

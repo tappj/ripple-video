@@ -117,3 +117,116 @@ def preserve_source_audio(generated: Path, source: Path, destination: Path) -> P
         raise PipelineError(f"could not preserve source audio: {detail}")
     temporary.replace(destination)
     return destination
+
+
+def extract_audio_track(source: Path, destination: Path) -> Path:
+    """Extract a compact, timeline-preserving audio track from a source video."""
+    source_info = probe_video(source)
+    if not source_info.has_audio:
+        raise PipelineError("the source video has no audio to transform")
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise PipelineError("required executable not found on PATH: ffmpeg")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    completed = subprocess.run(
+        [
+            executable,
+            "-y",
+            "-v",
+            "error",
+            "-filter_threads",
+            "1",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-f",
+            "ipod",
+            str(temporary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PipelineError(f"could not extract source audio: {detail}")
+    temporary.replace(destination)
+    return destination
+
+
+def replace_audio_track(
+    generated: Path,
+    audio: Path,
+    destination: Path,
+    *,
+    audio_start_sec: float,
+    duration_sec: float,
+) -> Path:
+    """Discard provider audio and lay one exact slice of a mastered track over video."""
+    if audio_start_sec < 0 or duration_sec <= 0:
+        raise PipelineError("replacement audio timing must be positive")
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise PipelineError("required executable not found on PATH: ffmpeg")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".mp4.part")
+    completed = subprocess.run(
+        [
+            executable,
+            "-y",
+            "-v",
+            "error",
+            "-filter_threads",
+            "1",
+            "-i",
+            str(generated),
+            "-ss",
+            f"{audio_start_sec:.12f}",
+            "-i",
+            str(audio),
+            "-t",
+            f"{duration_sec:.12f}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-af",
+            "apad",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            str(temporary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PipelineError(f"could not replace generated audio: {detail}")
+    temporary.replace(destination)
+    return destination

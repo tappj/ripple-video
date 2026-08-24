@@ -16,6 +16,11 @@ from typing import Protocol, cast
 
 from cutdetect.export import split_video
 from cutdetect.ingest import IngestError, probe_video
+from cutdetect.pipeline.audio_pipeline import (
+    SPEECH_TO_SPEECH_MAX_SEC,
+    validate_voice_preset,
+    voice_audio_credit_cost,
+)
 from cutdetect.pipeline.capabilities import (
     MODEL_CAPABILITIES,
     ROUTER_ASPECT_RATIOS,
@@ -28,7 +33,11 @@ from cutdetect.pipeline.grouping import (
     requires_cut_partition,
     whole_video_plan,
 )
-from cutdetect.pipeline.media import preserve_source_audio, trim_generated_duration
+from cutdetect.pipeline.media import (
+    preserve_source_audio,
+    replace_audio_track,
+    trim_generated_duration,
+)
 from cutdetect.pipeline.runway_client import (
     GenerationPoll,
     GenerationRequest,
@@ -110,6 +119,12 @@ class GenerationGateway(Protocol):
     def download(self, url: str, destination_key: str) -> Path: ...
 
 
+class VoiceProcessor(Protocol):
+    def convert_source_voice(
+        self, source_video: Path, *, preset_id: str, job_id: str
+    ) -> Path: ...
+
+
 @dataclass(frozen=True, slots=True)
 class JobRecord:
     id: str
@@ -117,6 +132,10 @@ class JobRecord:
     source_path: Path
     target_face_path: Path
     target_voice_path: Path | None
+    voice_preset_id: str | None
+    voice_track_path: Path | None
+    audio_state: str
+    audio_estimated_credits: int
     target_product_path: Path | None
     prompt: str
     prompt_template_id: str
@@ -191,7 +210,11 @@ class PreparedJob:
             "resolution": self.job.resolution,
             "segment_count": self.generation_count,
             "estimated_credits": self.job.estimated_credits,
-            "audio_mode": "reference" if self.job.target_voice_path else "source",
+            "audio_mode": (
+                "preset" if self.job.voice_preset_id else
+                "reference" if self.job.target_voice_path else "source"
+            ),
+            "voice_preset_id": self.job.voice_preset_id,
             "grouping_path": str(self.grouping_path),
             "database_path": str(self.database_path),
             "job_directory": str(self.job_directory),
@@ -240,6 +263,10 @@ class PhaseCStore:
                 source_path TEXT NOT NULL,
                 target_face_path TEXT NOT NULL,
                 target_voice_path TEXT NOT NULL,
+                voice_preset_id TEXT,
+                voice_track_path TEXT,
+                audio_state TEXT NOT NULL DEFAULT 'SOURCE',
+                audio_estimated_credits INTEGER NOT NULL DEFAULT 0,
                 target_product_path TEXT,
                 prompt TEXT NOT NULL,
                 prompt_template_id TEXT NOT NULL DEFAULT 'ugc_clone_v1',
@@ -321,6 +348,10 @@ class PhaseCStore:
         self._ensure_column("jobs", "owner_device_hash", "TEXT")
         self._ensure_column("jobs", "target_product_path", "TEXT")
         self._ensure_column("jobs", "target_product_uri", "TEXT")
+        self._ensure_column("jobs", "voice_preset_id", "TEXT")
+        self._ensure_column("jobs", "voice_track_path", "TEXT")
+        self._ensure_column("jobs", "audio_state", "TEXT NOT NULL DEFAULT 'SOURCE'")
+        self._ensure_column("jobs", "audio_estimated_credits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("segments", "requested_duration_sec", "INTEGER NOT NULL DEFAULT 10")
         self._ensure_column("segments", "estimated_credits", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("segments", "hard_cut_offsets_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -381,6 +412,7 @@ class PhaseCStore:
         prompt_template_version: int = UGC_CLONE_V1.version,
         consent_affirmed: bool = False,
         owner_device_hash: str | None = None,
+        voice_preset_id: str | None = None,
     ) -> JobRecord:
         if len(input_paths) != len(grouping.groups) or len(output_keys) != len(grouping.groups):
             raise ValueError("every generation group needs one input and output path")
@@ -388,6 +420,9 @@ class PhaseCStore:
             raise ValueError("grouping and generation model must match")
         if model_id not in MODEL_CAPABILITIES:
             raise PipelineError(f"unsupported direct reference model: {model_id}")
+        selected_voice = validate_voice_preset(voice_preset_id)
+        if selected_voice is not None and target_voice_path is not None:
+            raise PipelineError("choose either a preset voice or a legacy voice sample, not both")
         is_router_route = route_id.startswith("router:")
         workflow_spec = workflow_spec_for_route(route_id) if is_workflow_route(route_id) else None
         if route_id != DIRECT_API_ROUTE and workflow_spec is None and not is_router_route:
@@ -446,17 +481,22 @@ class PhaseCStore:
             )
             request_specs.append((requested_duration, segment_credits))
         created = _now()
-        estimated = sum(cost for _duration, cost in request_specs)
+        source_duration = sum(group.duration_sec for group in grouping.groups)
+        audio_estimated = (
+            voice_audio_credit_cost(source_duration) if selected_voice is not None else 0
+        )
+        estimated = sum(cost for _duration, cost in request_specs) + audio_estimated
         with self._connection:
             self._connection.execute(
                 """
                 INSERT INTO jobs(
                     id, state, source_path, target_face_path, target_voice_path,
+                    voice_preset_id, audio_state, audio_estimated_credits,
                     target_product_path,
                     prompt, prompt_template_id, prompt_template_version, consent_affirmed_at,
                     workflow_id, model_id, ratio, resolution,
                     estimated_credits, owner_device_hash, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -464,6 +504,9 @@ class PhaseCStore:
                     str(source_path),
                     str(target_face_path),
                     str(target_voice_path) if target_voice_path is not None else "",
+                    selected_voice,
+                    "PENDING" if selected_voice is not None else "SOURCE",
+                    audio_estimated,
                     str(target_product_path) if target_product_path is not None else None,
                     prompt,
                     prompt_template_id,
@@ -520,7 +563,12 @@ class PhaseCStore:
                     "model_id": model_id,
                     "route_id": route_id,
                     "consent_affirmed": consent_affirmed,
-                    "audio_mode": "reference" if target_voice_path else "source",
+                    "audio_mode": (
+                        "preset" if selected_voice else
+                        "reference" if target_voice_path else "source"
+                    ),
+                    "voice_preset_id": selected_voice,
+                    "audio_estimated_credits": audio_estimated,
                     "prompt_template": {
                         "id": prompt_template_id,
                         "version": prompt_template_version,
@@ -539,6 +587,12 @@ class PhaseCStore:
             target_voice_path=(
                 Path(str(row["target_voice_path"])) if str(row["target_voice_path"]) else None
             ),
+            voice_preset_id=cast(str | None, row["voice_preset_id"]),
+            voice_track_path=(
+                Path(str(row["voice_track_path"])) if row["voice_track_path"] else None
+            ),
+            audio_state=str(row["audio_state"]),
+            audio_estimated_credits=int(row["audio_estimated_credits"]),
             target_product_path=(
                 Path(str(row["target_product_path"])) if row["target_product_path"] else None
             ),
@@ -804,6 +858,29 @@ class PhaseCStore:
             )
             self._event(job_id, "job.references_uploaded", at=uploaded_at)
 
+    def set_audio_state(
+        self,
+        job_id: str,
+        state: str,
+        *,
+        voice_track_path: Path | None = None,
+    ) -> JobRecord:
+        changed = _now()
+        with self._connection:
+            if voice_track_path is None:
+                self._connection.execute(
+                    "UPDATE jobs SET audio_state = ?, updated_at = ? WHERE id = ?",
+                    (state, _timestamp(changed), job_id),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE jobs SET audio_state = ?, voice_track_path = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (state, str(voice_track_path), _timestamp(changed), job_id),
+                )
+            self._event(job_id, "job.audio_state", payload={"state": state}, at=changed)
+        return self.job(job_id)
+
     def set_segment_state(
         self,
         job_id: str,
@@ -964,11 +1041,13 @@ class PhaseCWorker:
         *,
         store: PhaseCStore,
         gateway: GenerationGateway,
+        audio_processor: VoiceProcessor | None = None,
         retry_policy: dict[str | None, Retry] | None = None,
         now: Callable[[], datetime] = _now,
     ) -> None:
         self.store = store
         self.gateway = gateway
+        self.audio_processor = audio_processor
         self.retry_policy = retry_policy or RETRY_POLICY
         self.now = now
 
@@ -1140,7 +1219,20 @@ class PhaseCWorker:
         self.store.set_segment_state(segment.job_id, segment.index, SegmentState.DOWNLOADING)
         try:
             job = self.store.job(segment.job_id)
-            if is_workflow_route(job.route_id):
+            if job.voice_preset_id is not None:
+                if job.voice_track_path is None or not job.voice_track_path.is_file():
+                    raise PipelineError("the converted voice master is unavailable")
+                output_key = Path(segment.output_key)
+                provider_key = str(output_key.with_name(f"{output_key.stem}_provider.mp4"))
+                provider_path = self.gateway.download(result.output_urls[0], provider_key)
+                output_path = replace_audio_track(
+                    provider_path,
+                    job.voice_track_path,
+                    provider_path.with_name(output_key.name),
+                    audio_start_sec=segment.start_sec,
+                    duration_sec=segment.duration_sec,
+                )
+            elif is_workflow_route(job.route_id):
                 output_key = Path(segment.output_key)
                 provider_key = str(output_key.with_name(f"{output_key.stem}_provider.mp4"))
                 provider_path = self.gateway.download(result.output_urls[0], provider_key)
@@ -1203,6 +1295,17 @@ class PhaseCWorker:
             raise PipelineError(f"job {job_id} cannot run from {job.state.value}")
         if job.state == JobState.REVIEW:
             return job
+
+        if job.voice_preset_id is not None and job.voice_track_path is None:
+            if self.audio_processor is None:
+                raise PipelineError("the preset voice processor is unavailable")
+            self.store.set_audio_state(job_id, "PROCESSING")
+            track = self.audio_processor.convert_source_voice(
+                job.source_path,
+                preset_id=job.voice_preset_id,
+                job_id=job.id,
+            )
+            job = self.store.set_audio_state(job_id, "READY", voice_track_path=track)
 
         segments = self.store.segments(job_id)
         current = self.now()
@@ -1291,6 +1394,7 @@ def prepare_phase_c_job(
     owner_device_hash: str | None = None,
     job_id: str | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    voice_preset_id: str | None = None,
 ) -> PreparedJob:
     """Create a fully local, no-charge Phase C job ready for confirmation."""
     source = _validate_file(video, "source video")
@@ -1298,6 +1402,9 @@ def prepare_phase_c_job(
     voice = _validate_file(audio, "target voice") if audio is not None else None
     product_image = _validate_file(product, "target product") if product is not None else None
     source_probe = probe_video(source)
+    selected_voice = validate_voice_preset(voice_preset_id)
+    if selected_voice is not None and source_probe.duration_sec > SPEECH_TO_SPEECH_MAX_SEC:
+        raise PipelineError("preset voice conversion supports source videos up to 5 minutes")
     if voice is None and not source_probe.has_audio:
         raise PipelineError("the source video has no audio; add an optional voice reference")
     if not prompt.strip():
@@ -1381,6 +1488,7 @@ def prepare_phase_c_job(
             prompt_template_version=prompt_template_version,
             consent_affirmed=consent_affirmed,
             owner_device_hash=owner_device_hash,
+            voice_preset_id=selected_voice,
         )
     manifest = {
         "job_id": job.id,
@@ -1395,7 +1503,10 @@ def prepare_phase_c_job(
         },
         "consent_affirmed_at": _timestamp(job.consent_affirmed_at),
         "estimated_credits": job.estimated_credits,
-        "audio_mode": "reference" if stored_voice else "source",
+        "audio_mode": (
+            "preset" if selected_voice else "reference" if stored_voice else "source"
+        ),
+        "voice_preset_id": selected_voice,
         "product_mode": "replacement" if stored_product else None,
         "grouping": str(grouping_path),
         "database": str(database_path),
@@ -1442,7 +1553,13 @@ def job_status(store: PhaseCStore, job_id: str) -> dict[str, object]:
         "estimated_credits": job.estimated_credits,
         "max_credits": job.max_credits,
         "submitted_credits": job.submitted_credits,
-        "audio_mode": "reference" if job.target_voice_path else "source",
+        "audio_mode": (
+            "preset" if job.voice_preset_id else
+            "reference" if job.target_voice_path else "source"
+        ),
+        "voice_preset_id": job.voice_preset_id,
+        "audio_state": job.audio_state,
+        "audio_estimated_credits": job.audio_estimated_credits,
         "product_mode": "replacement" if job.target_product_path else None,
         "prompt": job.prompt,
         "final_output_key": job.final_output_key,

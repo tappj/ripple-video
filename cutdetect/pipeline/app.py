@@ -24,6 +24,11 @@ from typing import cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from cutdetect.ingest import probe_video
+from cutdetect.pipeline.audio_pipeline import (
+    RUNWAY_PRESET_VOICES,
+    RunwayAudioProcessor,
+    validate_voice_preset,
+)
 from cutdetect.pipeline.capabilities import MODEL_CAPABILITIES
 from cutdetect.pipeline.grouping import requires_cut_partition
 from cutdetect.pipeline.orchestration import (
@@ -114,6 +119,7 @@ def _boot_payload() -> dict[str, object]:
             },
         },
         "templates": [asdict(template) for template in PROMPT_TEMPLATES.values()],
+        "voices": list(RUNWAY_PRESET_VOICES),
     }
 
 
@@ -663,6 +669,11 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 raise PipelineError("the optional voice reference is unavailable")
             if experience == "product" and (product is None or not product.is_file()):
                 raise PipelineError("upload a product image for the product consistency test")
+            voice_preset_id = (
+                validate_voice_preset(str(body.get("voice_preset", "")))
+                if experience == "clone"
+                else None
+            )
             product_route = str(body.get("product_route", "router"))
             if experience == "product" and product_route not in {"router", "workflow"}:
                 raise PipelineError("unsupported product test route")
@@ -702,6 +713,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     "template_id": selected_template.id,
                     "template_version": selected_template.version,
                     "auto_run": body.get("auto_run") is True,
+                    "voice_preset": voice_preset_id,
                 },
                 updated_at=time.time(),
             )
@@ -827,6 +839,9 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     owner_device_hash=owner_hash,
                     job_id=session_id,
                     progress_callback=encoding_progress,
+                    voice_preset_id=(
+                        str(body.get("voice_preset")) if body.get("voice_preset") else None
+                    ),
                 )
                 job = prepared.job
             else:
@@ -922,7 +937,20 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         )
                     else:
                         raise PipelineError(f"unsupported generation route: {job.route_id}")
-                    PhaseCWorker(store=store, gateway=gateway).run_until_review(job_id)
+                    audio_processor = (
+                        RunwayAudioProcessor(
+                            api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
+                            logger=gateway_logger,
+                            storage=storage,
+                        )
+                        if job.voice_preset_id is not None
+                        else None
+                    )
+                    PhaseCWorker(
+                        store=store,
+                        gateway=gateway,
+                        audio_processor=audio_processor,
+                    ).run_until_review(job_id)
             except Exception as error:
                 try:
                     with PhaseCStore(storage.path("orchestration.sqlite3")) as store:
@@ -951,6 +979,25 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         parts = Path(route.lstrip("/")).parts
         try:
             if self._require_authorization():
+                return
+            if len(parts) == 3 and parts[:2] == ("api", "voice-previews"):
+                preset = validate_voice_preset(parts[2])
+                if preset is None:
+                    raise PipelineError("choose a voice preset first")
+                storage = self._storage()
+                processor = RunwayAudioProcessor(
+                    api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
+                    logger=JsonlCallLogger(storage.path("voice_previews/runway_calls.jsonl")),
+                    storage=storage,
+                )
+                # Serialize first-preview creation so two devices cannot purchase the
+                # same cached sample at the same time.
+                with self.server.active_lock:
+                    preview = processor.voice_preview(preset)
+                if preview is None:
+                    self._json({"status": "PENDING"}, HTTPStatus.ACCEPTED)
+                else:
+                    self._json({"status": "READY", "url": self._file_url(preview)})
                 return
             if len(parts) == 4 and parts[:2] == ("api", "uploads"):
                 self._save_upload(parts[2], parts[3])

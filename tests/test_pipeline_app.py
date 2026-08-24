@@ -28,7 +28,11 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert ">ripple</div>" in html
     assert "Source video" in html
     assert "Target face" in html
-    assert "Target voice" in html
+    assert "Output voice" in html
+    assert "Original source audio" in html
+    assert "voice_preset" in html
+    assert "/api/voice-previews/" in html
+    assert "first preview is generated once and cached (1 api credit)" in html.lower()
     assert "UGC product test" in html
     assert "New product" in html
     assert "Comparison route" in html
@@ -36,7 +40,7 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert '"label":"Hailuo 3"' in html
     assert "ugc_product_clone_v1" in html
     assert "0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0" not in html
-    assert "Optional · keep source audio" in html
+    assert "Optional · preserve original audio" in html
     assert "consent" in html
     assert "Generate clips" in html
     assert "auto_run:true" in html
@@ -48,7 +52,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert '<select id="resolution">' in html
     assert 'id="previewVideo"' in html
     assert 'id="previewImage"' in html
-    assert 'id="previewAudio"' in html
+    assert 'id="voiceSample"' in html
+    assert 'id="fileAudio"' not in html
     assert "URL.createObjectURL(file)" in html
     assert "Fresh task per clip" in html
     assert "4af4fdf6-a371-4a73-b02d-fdbf116186d5" not in html
@@ -59,9 +64,8 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "Recreate Video 1 as one continuous take at 1.0x speed" in html
     assert "Image 1 provides the whole person" in html
     assert "Everything that is not the person comes from Video 1" in html
-    assert "Video 1 is the only source of the words" in html
-    assert "Audio 1 is a voice sample, not a script" in html
-    assert "any music already in Video 1 plays on unchanged and uncovered" in html
+    assert "stays in sync with Video 1's original dialogue" in html
+    assert "Audio 1" not in html
     assert "woman from Image 1" not in html
     assert "Confirm & generate" not in html
     assert "Original reference" not in html

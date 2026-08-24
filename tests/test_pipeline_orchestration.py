@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from cutdetect.pipeline.capabilities import credit_cost
 from cutdetect.pipeline.grouping import AtomicSegment, group_atomic_segments
 from cutdetect.pipeline.orchestration import (
@@ -222,6 +224,105 @@ def test_submits_every_segment_before_polling_and_reuses_references(tmp_path: Pa
     event_text = "".join(format_sse_events(store.events_since(job_id)))
     assert "event: segment.submitted" in event_text
     assert "event: job.state" in event_text
+    store.close()
+
+
+def test_preset_voice_is_mastered_once_and_never_sent_to_the_video_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PhaseCStore(tmp_path / "jobs.sqlite3")
+    source = tmp_path / "source.mp4"
+    face = tmp_path / "face.jpg"
+    segment_path = tmp_path / "segment.mp4"
+    for path in (source, face, segment_path):
+        path.write_bytes(b"test")
+    grouping = group_atomic_segments(
+        (
+            AtomicSegment(
+                index=0,
+                start_frame=0,
+                end_frame=150,
+                start_sec=0,
+                end_sec=5,
+                duration_sec=5,
+            ),
+        ),
+        model_id="hailuo3",
+        target_sec=5,
+        max_group_segments=1,
+    )
+    store.create_job(
+        job_id="preset-job",
+        source_path=source,
+        target_face_path=face,
+        target_voice_path=None,
+        prompt="test prompt",
+        grouping=grouping,
+        input_paths=(segment_path,),
+        output_keys=("jobs/preset-job/segments/0/output_raw.mp4",),
+        model_id="hailuo3",
+        ratio="9:16",
+        resolution="768P",
+        voice_preset_id="Maya",
+    )
+    store.confirm("preset-job", 999)
+
+    class VoiceProcessor:
+        calls = 0
+
+        def convert_source_voice(
+            self, source_video: Path, *, preset_id: str, job_id: str
+        ) -> Path:
+            self.calls += 1
+            assert source_video == source
+            assert preset_id == "Maya"
+            track = tmp_path / "voice-master.mp3"
+            track.write_bytes(b"voice")
+            return track
+
+    class Gateway:
+        def upload(self, _path: Path, *, role: str) -> str:
+            return f"runway://{role}"
+
+        def submit(self, request: GenerationRequest) -> str:
+            assert request.reference_audio is None
+            assert "Audio 1" not in request.prompt_text
+            return "video-task"
+
+        def poll(self, _task_id: str) -> GenerationPoll:
+            return GenerationPoll("SUCCEEDED", output_urls=("https://video",))
+
+        def download(self, _url: str, destination_key: str) -> Path:
+            destination = tmp_path / destination_key
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"provider video")
+            return destination
+
+    def fake_replace(
+        _generated: Path,
+        _audio: Path,
+        destination: Path,
+        *,
+        audio_start_sec: float,
+        duration_sec: float,
+    ) -> Path:
+        assert audio_start_sec == 0
+        assert duration_sec == 5
+        destination.write_bytes(b"final video")
+        return destination
+
+    monkeypatch.setattr("cutdetect.pipeline.orchestration.replace_audio_track", fake_replace)
+    processor = VoiceProcessor()
+    job = PhaseCWorker(
+        store=store,
+        gateway=Gateway(),
+        audio_processor=processor,
+    ).run_once("preset-job")
+
+    assert job.state == JobState.REVIEW
+    assert processor.calls == 1
+    assert store.job("preset-job").voice_preset_id == "Maya"
+    assert store.job("preset-job").audio_state == "READY"
     store.close()
 
 

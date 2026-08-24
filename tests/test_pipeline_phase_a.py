@@ -48,17 +48,18 @@ def test_strict_clone_constraints_cannot_be_replaced_by_retry_direction() -> Non
     prompt = strict_generation_prompt("Make the delivery more energetic.")
 
     assert prompt.startswith(UGC_CLONE_V1.body)
-    assert "Video 1 is the only source of the words" in prompt
+    assert "stays in sync with Video 1's original dialogue" in prompt
     assert prompt.endswith("ADDITIONAL DIRECTION. Make the delivery more energetic.")
 
 
-def test_clone_prompt_only_mentions_audio_1_when_a_voice_is_supplied() -> None:
+def test_clone_prompt_never_passes_voice_instructions_to_the_video_model() -> None:
     with_voice = strict_generation_prompt("", has_voice=True)
     without_voice = strict_generation_prompt("", has_voice=False)
 
-    assert "Audio 1" in with_voice
+    assert "Audio 1" not in with_voice
     assert "Audio 1" not in without_voice
     assert without_voice == UGC_CLONE_NO_VOICE_V1.body
+    assert with_voice == without_voice
 
 
 def test_either_clone_base_is_recognised_as_an_unedited_default() -> None:
