@@ -39,7 +39,7 @@ def render_ripple_html(boot: dict[str, object]) -> str:
   </header>
   <main class="shell">
     <aside class="composer">
-      <div class="experience-tabs" role="tablist" aria-label="Generation experience"><button class="experience-tab" id="cloneTab" role="tab" data-experience="clone" aria-selected="true">Face + voice</button><button class="experience-tab" id="productTab" role="tab" data-experience="product" aria-selected="false">UGC product test</button></div>
+      <div class="experience-tabs" role="tablist" aria-label="Generation experience"><button class="experience-tab" id="cloneTab" role="tab" data-experience="clone" aria-selected="true">UGC talking video</button><button class="experience-tab" id="productTab" role="tab" data-experience="product" aria-selected="false">UGC product review</button></div>
       <div class="overline" id="experienceOverline">New generation</div>
       <h1 id="experienceTitle">Clone the cut.</h1>
       <div class="inputs">

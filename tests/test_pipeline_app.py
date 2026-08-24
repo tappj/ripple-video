@@ -34,7 +34,7 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "/api/voice-previews/" in html
     assert "first preview is generated once and cached" not in html.lower()
     assert "Preset mode isolates" not in html
-    assert "UGC product test" in html
+    assert "UGC product review" in html
     assert "New product" in html
     assert "Comparison route" in html
     assert '"routeLabel":"Model Router API"' in html
