@@ -27,7 +27,7 @@ video, target face, optional target voice, and prompt, then exposes its generate
 |---|---|
 | Seedance 2.0 | `fecc0662-a1e1-4941-b84a-76df0bde1e4f` |
 | Seedance 2.5 (disabled) | `4af4fdf6-a371-4a73-b02d-fdbf116186d5` |
-| MiniMax H3 | `55cd8a57-dd96-4401-b9d0-0ab506130f77` |
+| MiniMax H3 (disabled: fixed 15s) | `55cd8a57-dd96-4401-b9d0-0ab506130f77` |
 
 All three graphs use 9:16 output and a 15-second maximum. Ripple overrides the exposed prompt for
 every independent clip and trims each returned video to the source clip's exact duration.

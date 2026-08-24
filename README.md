@@ -125,8 +125,9 @@ limits are the final spending control:
 .venv311/bin/cutdetect pipeline run-job JOB_ID --max-credits ESTIMATED_CREDITS
 ```
 
-New MiniMax H3 and Seedance 2.0 jobs each use a dedicated published Runway Workflow.
-Seedance 2.5 remains visible as a disabled coming-soon choice.
+Seedance 2.0 uses its dedicated published Runway Workflow. Seedance 2.5 and MiniMax
+H3 remain visible but disabled; MiniMax H3 is paused while its Workflow is fixed at
+15 seconds and cannot preserve shorter source pacing.
 Every Workflow is fixed to 9:16 and a 15-second maximum; Ripple sends each source group as an
 independent invocation and trims the result to the source group's exact duration. The worker uploads
 the face and voice once, gives every clip a separate source upload and a brand-new invocation,
@@ -137,7 +138,8 @@ resumable.
 
 The **UGC product test** tab provides a controlled two-route comparison. It sends the same
 source cut, avatar image, product image, and prompt either to Seedance 2.0 through the
-`ripple-seedance-2` Model Router or to MiniMax H3 through the published product-clone Workflow.
+`ripple-seedance-2` Model Router. The fixed-duration MiniMax H3 comparison route remains
+visible but disabled.
 Each selection creates fresh, independent tasks; a result from one route is never used as
 context for the other.
 

@@ -65,6 +65,11 @@ from cutdetect.pipeline.workflow_client import (
     workflow_spec_for_route,
 )
 
+DISABLED_MODEL_LABELS = {
+    "seedance2_5": "Seedance 2.5",
+    "hailuo3": "MiniMax H3",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class PipelineStudioConfig:
@@ -81,7 +86,7 @@ def _boot_payload() -> dict[str, object]:
     labels = {
         "seedance2": "Seedance 2.0",
         "seedance2_5": "Seedance 2.5 — coming soon",
-        "hailuo3": "MiniMax H3",
+        "hailuo3": "MiniMax H3 — temporarily unavailable",
     }
     workflows = {
         model_id: workflow_spec_for_model(cast(RunwayReferenceModel, model_id))
@@ -96,7 +101,7 @@ def _boot_payload() -> dict[str, object]:
                 "defaultRatio": "9:16",
                 "defaultResolution": workflows[model_id].resolution,
                 "routeLabel": "Workflow API",
-                "disabled": model_id == "seedance2_5",
+                "disabled": model_id in DISABLED_MODEL_LABELS,
                 "minDuration": caps.min_duration_s,
                 "maxDuration": caps.max_duration_s,
                 "supportsInternalCuts": caps.supports_internal_cuts,
@@ -113,11 +118,12 @@ def _boot_payload() -> dict[str, object]:
                 "resolution": "720p",
             },
             "workflow": {
-                "label": "MiniMax H3",
+                "label": "MiniMax H3 — temporarily unavailable",
                 "routeLabel": "Workflow API",
                 "model": "hailuo3",
                 "ratio": "9:16",
                 "resolution": PRODUCT_CLONE_WORKFLOW.resolution,
+                "disabled": True,
             },
         },
         "templates": [asdict(template) for template in PROMPT_TEMPLATES.values()],
@@ -757,13 +763,13 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 selected_resolution = "720p"
                 selected_route = model_router_route("seedance2")
             elif experience == "product":
-                selected_model = "hailuo3"
-                selected_resolution = PRODUCT_CLONE_WORKFLOW.resolution
-                selected_route = PRODUCT_CLONE_WORKFLOW.route_id
+                raise PipelineError("MiniMax H3 is temporarily unavailable")
             else:
                 selected_model = str(body.get("model", "seedance2"))
-                if selected_model == "seedance2_5":
-                    raise PipelineError("Seedance 2.5 is coming soon and is not selectable yet")
+                if selected_model in DISABLED_MODEL_LABELS:
+                    raise PipelineError(
+                        f"{DISABLED_MODEL_LABELS[selected_model]} is not selectable yet"
+                    )
                 selected_resolution = (
                     str(body.get("resolution")) if body.get("resolution") else None
                 )

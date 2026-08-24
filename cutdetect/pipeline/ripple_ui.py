@@ -101,7 +101,7 @@ voicePreset.onchange=()=>{$('#voiceChoice').textContent=voicePreset.value?`${voi
 async function loadVoicePreview(){if(!voicePreset.value)return;const selected=voicePreset.value,button=$('#previewVoice');button.disabled=true;button.textContent='Loading…';try{for(let attempt=0;attempt<90;attempt++){const result=await api(`/api/voice-previews/${encodeURIComponent(selected)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(result.status==='READY'){if(voicePreset.value!==selected)return;$('#voiceSample').src=result.url;$('#voiceSample').hidden=false;await $('#voiceSample').play();button.textContent='Replay';return}await new Promise(resolve=>setTimeout(resolve,2000))}throw new Error('Voice preview timed out.')}catch(error){setError(error.message);button.textContent='Preview'}finally{button.disabled=!voicePreset.value}}
 $('#previewVoice').onclick=loadVoicePreview;
 Object.entries(BOOT.models).forEach(([id,caps])=>{const option=new Option(caps.label,id);option.disabled=Boolean(caps.disabled);model.add(option)});
-Object.entries(BOOT.productRoutes).forEach(([id,caps])=>productRoute.add(new Option(`${caps.label} · ${caps.routeLabel}`,id)));
+Object.entries(BOOT.productRoutes).forEach(([id,caps])=>{const option=new Option(`${caps.label} · ${caps.routeLabel}`,id);option.disabled=Boolean(caps.disabled);productRoute.add(option)});
 model.value='seedance2';
 productRoute.value='router';
 const templateById=Object.fromEntries(BOOT.templates.map(template=>[template.id,template]));
