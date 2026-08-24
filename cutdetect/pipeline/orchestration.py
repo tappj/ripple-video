@@ -35,7 +35,6 @@ from cutdetect.pipeline.grouping import (
 )
 from cutdetect.pipeline.media import (
     preserve_source_audio,
-    slice_audio_track,
     trim_generated_duration,
 )
 from cutdetect.pipeline.runway_client import (
@@ -120,8 +119,13 @@ class GenerationGateway(Protocol):
 
 
 class VoiceProcessor(Protocol):
-    def convert_source_voice(
-        self, source_video: Path, *, preset_id: str, job_id: str
+    def convert_clip_voice(
+        self,
+        clip_video: Path,
+        *,
+        preset_id: str,
+        job_id: str,
+        segment_index: int,
     ) -> Path: ...
 
 
@@ -481,9 +485,10 @@ class PhaseCStore:
             )
             request_specs.append((requested_duration, segment_credits))
         created = _now()
-        source_duration = sum(group.duration_sec for group in grouping.groups)
         audio_estimated = (
-            voice_audio_credit_cost(source_duration) if selected_voice is not None else 0
+            sum(voice_audio_credit_cost(group.duration_sec) for group in grouping.groups)
+            if selected_voice is not None
+            else 0
         )
         estimated = sum(cost for _duration, cost in request_specs) + audio_estimated
         with self._connection:
@@ -1110,7 +1115,13 @@ class PhaseCWorker:
             next_attempt_at=None,
         )
 
-    def _submit(self, job: JobRecord, segment: SegmentRecord) -> None:
+    def _submit(
+        self,
+        job: JobRecord,
+        segment: SegmentRecord,
+        *,
+        prepared_voice: Path | None = None,
+    ) -> None:
         self.store.set_segment_state(job.id, segment.index, SegmentState.UPLOADING)
         current = self.now()
         try:
@@ -1135,19 +1146,10 @@ class PhaseCWorker:
                 raise PipelineError(f"unsupported reference model: {job.model_id}")
             reference_audio_uri = refreshed_job.target_voice_uri
             if refreshed_job.voice_preset_id is not None:
-                voice_track = refreshed_job.voice_track_path
-                if voice_track is None or not voice_track.is_file():
-                    raise PipelineError("the converted voice master is unavailable")
-                clip_audio = segment.input_path.with_name("reference_voice.m4a")
-                if not clip_audio.is_file():
-                    slice_audio_track(
-                        voice_track,
-                        clip_audio,
-                        start_sec=segment.start_sec,
-                        duration_sec=segment.duration_sec,
-                    )
+                if prepared_voice is None or not prepared_voice.is_file():
+                    raise PipelineError("the transformed clip voice is unavailable")
                 reference_audio_uri = self.gateway.upload(
-                    clip_audio,
+                    prepared_voice,
                     role=f"segment_{segment.index}_voice",
                 )
             # Every cut receives a new Runway task with only its original source
@@ -1309,17 +1311,6 @@ class PhaseCWorker:
         if job.state == JobState.REVIEW:
             return job
 
-        if job.voice_preset_id is not None and job.voice_track_path is None:
-            if self.audio_processor is None:
-                raise PipelineError("the preset voice processor is unavailable")
-            self.store.set_audio_state(job_id, "PROCESSING")
-            track = self.audio_processor.convert_source_voice(
-                job.source_path,
-                preset_id=job.voice_preset_id,
-                job_id=job.id,
-            )
-            job = self.store.set_audio_state(job_id, "READY", voice_track_path=track)
-
         segments = self.store.segments(job_id)
         current = self.now()
         pending = tuple(
@@ -1328,6 +1319,19 @@ class PhaseCWorker:
             if segment.state == SegmentState.PENDING
             and (segment.next_attempt_at is None or segment.next_attempt_at <= current)
         )
+        prepared_voices: dict[int, Path] = {}
+        if job.voice_preset_id is not None and pending:
+            if self.audio_processor is None:
+                raise PipelineError("the preset voice processor is unavailable")
+            self.store.set_audio_state(job_id, "PROCESSING")
+            for segment in pending:
+                prepared_voices[segment.index] = self.audio_processor.convert_clip_voice(
+                    segment.input_path,
+                    preset_id=job.voice_preset_id,
+                    job_id=job.id,
+                    segment_index=segment.index,
+                )
+            job = self.store.set_audio_state(job_id, "READY")
         if pending:
             try:
                 job = self._ensure_references(job)
@@ -1340,7 +1344,11 @@ class PhaseCWorker:
                 return self.store.job(job_id)
             # Submission happens for every eligible segment before any task is polled.
             for segment in pending:
-                self._submit(job, segment)
+                self._submit(
+                    job,
+                    segment,
+                    prepared_voice=prepared_voices.get(segment.index),
+                )
 
         active_states = {
             SegmentState.SUBMITTED,

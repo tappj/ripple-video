@@ -227,7 +227,7 @@ def test_submits_every_segment_before_polling_and_reuses_references(tmp_path: Pa
     store.close()
 
 
-def test_preset_voice_is_mastered_once_and_sent_before_video_generation(
+def test_preset_voice_is_created_per_clip_and_sent_before_video_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = PhaseCStore(tmp_path / "jobs.sqlite3")
@@ -270,13 +270,20 @@ def test_preset_voice_is_mastered_once_and_sent_before_video_generation(
     class VoiceProcessor:
         calls = 0
 
-        def convert_source_voice(
-            self, source_video: Path, *, preset_id: str, job_id: str
+        def convert_clip_voice(
+            self,
+            clip_video: Path,
+            *,
+            preset_id: str,
+            job_id: str,
+            segment_index: int,
         ) -> Path:
             self.calls += 1
-            assert source_video == source
+            assert clip_video == segment_path
             assert preset_id == "Maya"
-            track = tmp_path / "voice-master.mp3"
+            assert job_id == "preset-job"
+            assert segment_index == 0
+            track = tmp_path / "clip-voice.m4a"
             track.write_bytes(b"voice")
             return track
 
@@ -286,7 +293,7 @@ def test_preset_voice_is_mastered_once_and_sent_before_video_generation(
 
         def submit(self, request: GenerationRequest) -> str:
             assert request.reference_audio == "runway://segment_0_voice"
-            assert "Audio 1 is the final dialogue track" in request.prompt_text
+            assert "Use Audio 1 as the complete final audio for this clip" in request.prompt_text
             return "video-task"
 
         def poll(self, _task_id: str) -> GenerationPoll:
@@ -298,20 +305,11 @@ def test_preset_voice_is_mastered_once_and_sent_before_video_generation(
             destination.write_bytes(b"provider video")
             return destination
 
-    def fake_slice(
-        _audio: Path, destination: Path, *, start_sec: float, duration_sec: float
-    ) -> Path:
-        assert start_sec == 0
-        assert duration_sec == 5
-        destination.write_bytes(b"clip voice")
-        return destination
-
     def fake_trim(_generated: Path, duration_sec: float, destination: Path) -> Path:
         assert duration_sec == 5
         destination.write_bytes(b"final video")
         return destination
 
-    monkeypatch.setattr("cutdetect.pipeline.orchestration.slice_audio_track", fake_slice)
     monkeypatch.setattr("cutdetect.pipeline.orchestration.trim_generated_duration", fake_trim)
     processor = VoiceProcessor()
     job = PhaseCWorker(

@@ -70,6 +70,16 @@ def _processor(
         return destination
 
     monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.extract_audio_track", fake_extract)
+
+    expected_duration = duration_sec
+
+    def fake_fit(source: Path, destination: Path, *, duration_sec: float) -> Path:
+        assert duration_sec in {expected_duration, 4.6}
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return destination
+
+    monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.fit_audio_duration", fake_fit)
     processor = RunwayAudioProcessor(
         api_key="key_test",
         logger=JsonlCallLogger(tmp_path / "calls.jsonl"),
@@ -95,15 +105,19 @@ def test_voice_catalog_and_credit_estimate_are_validated() -> None:
         validate_voice_preset("not-a-real-voice")
 
 
-def test_full_source_is_isolated_then_converted_once(
+def test_clip_is_isolated_then_converted_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     processor, calls = _processor(tmp_path, monkeypatch, duration_sec=60)
     source = tmp_path / "source.mp4"
     source.write_bytes(b"video")
 
-    first = processor.convert_source_voice(source, preset_id="Maya", job_id="job")
-    second = processor.convert_source_voice(source, preset_id="Maya", job_id="job")
+    first = processor.convert_clip_voice(
+        source, preset_id="Maya", job_id="job", segment_index=2
+    )
+    second = processor.convert_clip_voice(
+        source, preset_id="Maya", job_id="job", segment_index=2
+    )
 
     assert first == second
     assert first.read_bytes() == b"generated audio"
@@ -116,17 +130,19 @@ def test_full_source_is_isolated_then_converted_once(
     assert speech["remove_background_noise"] is False
 
 
-def test_short_source_skips_unsupported_isolation_but_still_removes_noise(
+def test_short_clip_is_padded_and_still_runs_voice_isolation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     processor, calls = _processor(tmp_path, monkeypatch, duration_sec=4)
     source = tmp_path / "source.mp4"
     source.write_bytes(b"video")
 
-    processor.convert_source_voice(source, preset_id="Rachel", job_id="short")
+    processor.convert_clip_voice(
+        source, preset_id="Rachel", job_id="short", segment_index=0
+    )
 
-    assert not any(name == "isolation" for name, _payload in calls)
+    assert any(name == "isolation" for name, _payload in calls)
     speech = next(payload for name, payload in calls if name == "speech")
     assert isinstance(speech, dict)
-    assert speech["media"] == {"type": "audio", "uri": "runway://source"}
-    assert speech["remove_background_noise"] is True
+    assert speech["media"] == {"type": "audio", "uri": "runway://isolated"}
+    assert speech["remove_background_noise"] is False

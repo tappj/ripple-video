@@ -232,16 +232,15 @@ def replace_audio_track(
     return destination
 
 
-def slice_audio_track(
+def fit_audio_duration(
     source: Path,
     destination: Path,
     *,
-    start_sec: float,
     duration_sec: float,
 ) -> Path:
-    """Create the exact audio reference that corresponds to one video segment."""
-    if start_sec < 0 or duration_sec <= 0:
-        raise PipelineError("audio slice timing must be positive")
+    """Trim or silence-pad an audio file to one exact clip duration."""
+    if duration_sec <= 0:
+        raise PipelineError("audio duration must be positive")
     executable = shutil.which("ffmpeg")
     if executable is None:
         raise PipelineError("required executable not found on PATH: ffmpeg")
@@ -257,8 +256,8 @@ def slice_audio_track(
             "1",
             "-i",
             str(source),
-            "-ss",
-            f"{start_sec:.12f}",
+            "-af",
+            f"atrim=0:{duration_sec:.12f},apad=pad_dur={duration_sec:.12f}",
             "-t",
             f"{duration_sec:.12f}",
             "-vn",
@@ -278,6 +277,6 @@ def slice_audio_track(
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        raise PipelineError(f"could not create clip audio reference: {detail}")
+        raise PipelineError(f"could not fit clip audio duration: {detail}")
     temporary.replace(destination)
     return destination
