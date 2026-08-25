@@ -502,6 +502,28 @@ class RunwayClient:
             return GenerationPoll("RUNNING", progress=progress)
         return GenerationPoll("PENDING")
 
+    def cancel(self, task_id: str) -> None:
+        """Cancel a pending/running task, or delete it if it already finished."""
+        started = time.monotonic()
+        try:
+            self._client.tasks.delete(task_id)
+        except Exception as error:
+            status = getattr(error, "status_code", None)
+            if status == 404:
+                return
+            self._logger.write(
+                "runway.task.cancel_failed",
+                task_id=task_id,
+                status_code=status,
+                error_type=type(error).__name__,
+            )
+            raise PipelineError(f"Runway task cancellation failed: {error}") from error
+        self._logger.write(
+            "runway.task.cancelled",
+            task_id=task_id,
+            latency_sec=time.monotonic() - started,
+        )
+
     def generate(
         self,
         request: GenerationRequest,
@@ -574,6 +596,9 @@ class RunwayDirectGateway:
     def poll(self, task_id: str) -> GenerationPoll:
         return self._client.poll(task_id)
 
+    def cancel(self, task_id: str) -> None:
+        self._client.cancel(task_id)
+
     def download(self, url: str, destination_key: str) -> Path:
         started = time.monotonic()
         path = self._storage.download_https(url, destination_key)
@@ -616,6 +641,9 @@ class RunwayRouterGateway:
 
     def poll(self, task_id: str) -> GenerationPoll:
         return self._client.poll(task_id)
+
+    def cancel(self, task_id: str) -> None:
+        self._client.cancel(task_id)
 
     def download(self, url: str, destination_key: str) -> Path:
         started = time.monotonic()

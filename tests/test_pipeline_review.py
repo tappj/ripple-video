@@ -85,7 +85,7 @@ def _review_job(tmp_path: Path) -> tuple[PhaseCStore, LocalDiskStorage, str, Pat
         ratio="9:16",
         resolution="768P",
     )
-    store.confirm("review-job", 102)
+    store.confirm("review-job", store.job("review-job").estimated_credits)
     store.mark_submitted("review-job", 0, "task-one")
     raw = storage.copy_in(source, raw_key)
     store.set_segment_state("review-job", 0, SegmentState.READY_FOR_REVIEW)
@@ -158,24 +158,22 @@ def test_review_proxy_reports_corrupt_provider_output(tmp_path: Path) -> None:
         prepare_review_proxy(raw)
 
 
-def test_regeneration_keeps_old_raw_without_an_internal_credit_ceiling(tmp_path: Path) -> None:
+def test_paid_regeneration_is_disabled(tmp_path: Path) -> None:
     store, storage, job_id, raw = _review_job(tmp_path)
     review = ReviewService(store=store, storage=storage)
     review.approve(job_id, 0)
 
-    regenerated = review.regenerate(
-        job_id,
-        0,
-        prompt="edited prompt",
-        max_credits=0,
-    )
-    assert regenerated.state == SegmentState.PENDING
-    assert regenerated.output_key.endswith("output_raw_attempt_02.mp4")
-    assert regenerated.prompt_override == "edited prompt"
+    with pytest.raises(PipelineError, match="paid regeneration is disabled"):
+        review.regenerate(
+            job_id,
+            0,
+            prompt="edited prompt",
+            max_credits=0,
+        )
     assert raw.is_file()
-    assert store.job(job_id).state == JobState.RUNNING
-    assert store.job(job_id).max_credits is None
-    assert review.snapshot(job_id)["can_stitch"] is False
+    assert store.job(job_id).state == JobState.REVIEW
+    assert store.job(job_id).max_credits == store.job(job_id).estimated_credits
+    assert review.snapshot(job_id)["can_stitch"] is True
     store.close()
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypeVar, cast
 
-from runwayml import APIConnectionError, APITimeoutError, RunwayML
+from runwayml import RunwayML
 from runwayml.types.speech_to_speech_create_params import Voice
 from runwayml.types.task_retrieve_response import Failed, Succeeded
 from runwayml.types.text_to_speech_create_params import ElevenMultilingualV2Voice
@@ -45,11 +45,7 @@ RunwayPresetVoice = Literal[
 VOICE_ISOLATION_MIN_SEC = 4.6
 SPEECH_TO_SPEECH_MAX_SEC = 300.0
 VOICE_PREVIEW_TEXT = "This is your selected voice for Ripple."
-AUDIO_SUBMISSION_MAX_ATTEMPTS = 4
-AUDIO_RETRY_BASE_DELAY_SEC = 1.0
 ELEVENLABS_TRANSCRIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
-TRANSCRIPTION_MAX_ATTEMPTS = 4
-TRANSCRIPTION_RETRY_BASE_DELAY_SEC = 1.0
 MAX_CLIP_TRANSCRIPT_CHARS = 1000
 _Result = TypeVar("_Result")
 
@@ -88,6 +84,9 @@ class RunwayAudioProcessor:
         logger: JsonlCallLogger,
         storage: LocalDiskStorage,
         transcription_api_key: str = "",
+        cancel_requested: Callable[[], bool] | None = None,
+        submission_lock: threading.Lock | None = None,
+        task_registered: Callable[[str], None] | None = None,
     ) -> None:
         if not api_key:
             raise PipelineError("RUNWAYML_API_SECRET is not set")
@@ -95,51 +94,41 @@ class RunwayAudioProcessor:
         self._logger = logger
         self._storage = storage
         self._transcription_api_key = transcription_api_key.strip()
+        self._cancel_requested = cancel_requested or (lambda: False)
+        self._submission_lock = submission_lock or threading.Lock()
+        self._task_registered = task_registered or (lambda _task_id: None)
 
-    def _call_with_retry(
+    def _call_once(
         self,
         operation: str,
         call: Callable[[], _Result],
         *,
         segment_index: int,
     ) -> _Result:
-        """Retry transient provider submission failures without repeating completed stages."""
-        for attempt in range(1, AUDIO_SUBMISSION_MAX_ATTEMPTS + 1):
-            try:
-                return call()
-            except Exception as error:
-                status = getattr(error, "status_code", None)
-                retryable = (
-                    isinstance(error, (APIConnectionError, APITimeoutError))
-                    or status in {408, 409, 429}
-                    or (isinstance(status, int) and status >= 500)
-                )
-                self._logger.write(
-                    "runway.audio.submission_failed",
-                    operation=operation,
-                    segment_index=segment_index,
-                    attempt=attempt,
-                    max_attempts=AUDIO_SUBMISSION_MAX_ATTEMPTS,
-                    status_code=status,
-                    retryable=retryable,
-                    error_type=type(error).__name__,
-                )
-                if not retryable or attempt == AUDIO_SUBMISSION_MAX_ATTEMPTS:
-                    raise PipelineError(
-                        f"Runway {operation} failed for audio clip {segment_index + 1} "
-                        f"after {attempt} attempt{'s' if attempt != 1 else ''}: {error}"
-                    ) from error
-                base_delay = AUDIO_RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1))
-                delay = base_delay + random.uniform(0, base_delay * 0.5)
-                self._logger.write(
-                    "runway.audio.submission_retry_scheduled",
-                    operation=operation,
-                    segment_index=segment_index,
-                    next_attempt=attempt + 1,
-                    delay_sec=delay,
-                )
-                time.sleep(delay)
-        raise AssertionError("audio retry loop exhausted without returning or raising")
+        """Submit one paid audio operation exactly once."""
+        try:
+            with self._submission_lock:
+                if self._cancel_requested():
+                    raise PipelineError("audio processing was cancelled by the user")
+                result = call()
+                task_id = str(getattr(result, "id", ""))
+                if task_id:
+                    self._task_registered(task_id)
+                return result
+        except Exception as error:
+            self._logger.write(
+                "runway.audio.submission_failed",
+                operation=operation,
+                segment_index=segment_index,
+                attempt=1,
+                max_attempts=1,
+                status_code=getattr(error, "status_code", None),
+                retryable=False,
+                error_type=type(error).__name__,
+            )
+            raise PipelineError(
+                f"Runway {operation} failed for audio clip {segment_index + 1}: {error}"
+            ) from error
 
     def _state(self, key: str) -> dict[str, object]:
         path = self._storage.path(key)
@@ -168,6 +157,8 @@ class RunwayAudioProcessor:
     def _wait(self, task_id: str, *, timeout_sec: float = 3600.0) -> str:
         started = time.monotonic()
         while True:
+            if self._cancel_requested():
+                raise PipelineError("Runway audio processing was cancelled by the user")
             if time.monotonic() - started > timeout_sec:
                 raise PipelineError(f"Runway audio task {task_id} timed out")
             try:
@@ -189,6 +180,47 @@ class RunwayAudioProcessor:
             if task.status == "CANCELLED":
                 raise PipelineError("Runway audio processing was cancelled")
             time.sleep(5)
+
+    def cancel_job(
+        self,
+        job_id: str,
+        *,
+        extra_task_ids: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        """Cancel every persisted Runway audio task belonging to one job."""
+        cancelled: list[str] = []
+        audio_root = self._storage.path(f"jobs/{job_id}/segments")
+        task_ids = list(extra_task_ids)
+        state_paths = audio_root.glob("*/audio/state.json") if audio_root.is_dir() else ()
+        for state_path in state_paths:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(state, dict):
+                continue
+            task_ids.extend(
+                str(state.get(key, ""))
+                for key in ("isolation_task_id", "speech_task_id")
+            )
+        for task_id in dict.fromkeys(task_ids):
+            if not task_id:
+                continue
+            try:
+                self._client.tasks.delete(task_id)
+            except Exception as error:
+                status = getattr(error, "status_code", None)
+                if status != 404:
+                    self._logger.write(
+                        "runway.audio.cancel_failed",
+                        task_id=task_id,
+                        status_code=status,
+                        error_type=type(error).__name__,
+                    )
+                    continue
+            cancelled.append(task_id)
+            self._logger.write("runway.audio.cancelled", task_id=task_id)
+        return tuple(cancelled)
 
     def _download(self, url: str, key: str) -> Path:
         return self._storage.download_https(url, key)
@@ -291,59 +323,49 @@ class RunwayAudioProcessor:
             extract_audio_track(clip_video, source_audio)
             transcription_input = source_audio
 
-        for attempt in range(1, TRANSCRIPTION_MAX_ATTEMPTS + 1):
-            started = time.monotonic()
-            try:
-                text = self._request_transcript(transcription_input)
-            except Exception as error:
-                status = getattr(error, "status_code", None)
-                retryable = status in {408, 409, 429} or (
-                    isinstance(status, int) and status >= 500
-                )
-                self._logger.write(
-                    "elevenlabs.transcription.failed",
-                    segment_index=segment_index,
-                    attempt=attempt,
-                    max_attempts=TRANSCRIPTION_MAX_ATTEMPTS,
-                    status_code=status,
-                    retryable=retryable,
-                    error_type=type(error).__name__,
-                    latency_sec=time.monotonic() - started,
-                )
-                if not retryable or attempt == TRANSCRIPTION_MAX_ATTEMPTS:
-                    self._logger.write(
-                        "elevenlabs.transcription.skipped",
-                        segment_index=segment_index,
-                        reason="transcription remained unavailable",
-                    )
-                    return None
-                base_delay = TRANSCRIPTION_RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1))
-                time.sleep(base_delay + random.uniform(0, base_delay * 0.5))
-                continue
-            if not text:
-                self._logger.write(
-                    "elevenlabs.transcription.skipped",
-                    segment_index=segment_index,
-                    reason="isolated clip contains no detected speech",
-                )
-                return None
-            if len(text) > MAX_CLIP_TRANSCRIPT_CHARS:
-                self._logger.write(
-                    "elevenlabs.transcription.skipped",
-                    segment_index=segment_index,
-                    reason="transcript is implausibly long for one Ripple clip",
-                    character_count=len(text),
-                )
-                return None
-            transcript.write_text(text + "\n", encoding="utf-8")
+        started = time.monotonic()
+        try:
+            text = self._request_transcript(transcription_input)
+        except Exception as error:
             self._logger.write(
-                "elevenlabs.transcription.complete",
+                "elevenlabs.transcription.failed",
                 segment_index=segment_index,
-                character_count=len(text),
+                attempt=1,
+                max_attempts=1,
+                status_code=getattr(error, "status_code", None),
+                retryable=False,
+                error_type=type(error).__name__,
                 latency_sec=time.monotonic() - started,
             )
-            return text
-        return None
+            self._logger.write(
+                "elevenlabs.transcription.skipped",
+                segment_index=segment_index,
+                reason="transcription was unavailable",
+            )
+            return None
+        if not text:
+            self._logger.write(
+                "elevenlabs.transcription.skipped",
+                segment_index=segment_index,
+                reason="isolated clip contains no detected speech",
+            )
+            return None
+        if len(text) > MAX_CLIP_TRANSCRIPT_CHARS:
+            self._logger.write(
+                "elevenlabs.transcription.skipped",
+                segment_index=segment_index,
+                reason="transcript is implausibly long for one Ripple clip",
+                character_count=len(text),
+            )
+            return None
+        transcript.write_text(text + "\n", encoding="utf-8")
+        self._logger.write(
+            "elevenlabs.transcription.complete",
+            segment_index=segment_index,
+            character_count=len(text),
+            latency_sec=time.monotonic() - started,
+        )
+        return text
 
     def convert_clip_voice(
         self,
@@ -390,7 +412,7 @@ class RunwayAudioProcessor:
         isolation_task_id = str(state.get("isolation_task_id", ""))
         if not isolation_task_id:
             try:
-                created = self._call_with_retry(
+                created = self._call_once(
                     "voice isolation submission",
                     lambda: self._client.voice_isolation.create(
                         model="eleven_voice_isolation", audio_uri=source_uri
@@ -419,7 +441,7 @@ class RunwayAudioProcessor:
         if not speech_task_id:
             voice = cast(Voice, {"type": "runway-preset", "preset_id": preset})
             try:
-                created = self._call_with_retry(
+                created = self._call_once(
                     "speech-to-speech submission",
                     lambda: self._client.speech_to_speech.create(
                         model="eleven_multilingual_sts_v2",

@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, cast
@@ -72,6 +73,7 @@ class JobState(StrEnum):
     STITCHING = "STITCHING"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class SegmentState(StrEnum):
@@ -84,27 +86,16 @@ class SegmentState(StrEnum):
     READY_FOR_REVIEW = "READY_FOR_REVIEW"
     APPROVED = "APPROVED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
     REGENERATING = "REGENERATING"
-
-
-@dataclass(frozen=True, slots=True)
-class Retry:
-    max_retries: int
-    delay_sec: float
-    hint: str | None = None
-
-
-RETRY_POLICY: dict[str | None, Retry] = {
-    "INTERNAL.BAD_OUTPUT": Retry(2, 5, "check for captions or watermarks"),
-    "INPUT_PREPROCESSING.INTERNAL": Retry(3, 30),
-    "THIRD_PARTY.UNAVAILABLE": Retry(2, 300),
-    "INTERNAL": Retry(3, 30),
-    None: Retry(3, 30),
-}
 
 
 class CreditLimitError(PipelineError):
     """Raised before a paid submission could exceed the explicit ceiling."""
+
+
+class JobCancelledError(PipelineError):
+    """Raised when a terminal user cancellation interrupts worker progress."""
 
 
 class GenerationGateway(Protocol):
@@ -115,6 +106,8 @@ class GenerationGateway(Protocol):
     def submit(self, request: GenerationRequest) -> str: ...
 
     def poll(self, task_id: str) -> GenerationPoll: ...
+
+    def cancel(self, task_id: str) -> None: ...
 
     def download(self, url: str, destination_key: str) -> Path: ...
 
@@ -708,39 +701,36 @@ class PhaseCStore:
         return tuple(self._segment_from_row(row) for row in rows)
 
     def confirm(self, job_id: str, max_credits: int) -> JobRecord:
-        """Confirm a job without imposing a Ripple-side submission ceiling."""
+        """Confirm a job with a hard ceiling at or above its first-pass estimate."""
         job = self.job(job_id)
         if job.state not in {JobState.DRAFT, JobState.ESTIMATING, JobState.CONFIRMED}:
             raise PipelineError(f"job {job_id} cannot be confirmed from {job.state.value}")
+        requested_ceiling = max_credits if max_credits > 0 else job.estimated_credits
+        if requested_ceiling < job.estimated_credits:
+            raise CreditLimitError(
+                f"job requires {job.estimated_credits} credits; ceiling is {requested_ceiling}"
+            )
+        ceiling = job.estimated_credits
         changed = _now()
         with self._connection:
             self._connection.execute(
                 "UPDATE jobs SET state = ?, max_credits = ?, updated_at = ? WHERE id = ?",
-                (JobState.CONFIRMED.value, None, _timestamp(changed), job_id),
+                (JobState.CONFIRMED.value, ceiling, _timestamp(changed), job_id),
             )
             self._event(
                 job_id,
                 "job.confirmed",
-                payload={"estimated_credits": job.estimated_credits},
+                payload={
+                    "estimated_credits": job.estimated_credits,
+                    "max_credits": ceiling,
+                },
                 at=changed,
             )
         return self.job(job_id)
 
     def raise_credit_ceiling(self, job_id: str, max_credits: int) -> JobRecord:
-        """Remove a legacy Ripple-side ceiling while preserving API compatibility."""
-        job = self.job(job_id)
-        changed = _now()
-        with self._connection:
-            self._connection.execute(
-                "UPDATE jobs SET max_credits = ?, updated_at = ? WHERE id = ?",
-                (None, _timestamp(changed), job_id),
-            )
-            self._event(
-                job_id,
-                "job.credit_ceiling_removed",
-                payload={"previous": job.max_credits},
-                at=changed,
-            )
+        """Preserve the existing hard ceiling; automatic paid retries are disabled."""
+        del max_credits
         return self.job(job_id)
 
     def request_regeneration(
@@ -751,52 +741,14 @@ class PhaseCStore:
         prompt: str,
         max_credits: int,
     ) -> SegmentRecord:
-        """Unlock one reviewed segment and create an immutable new output attempt."""
-        if not prompt.strip():
-            raise PipelineError("regeneration prompt must not be empty")
-        segment = self.segments(job_id)[index]
-        if segment.state not in {
-            SegmentState.READY_FOR_REVIEW,
-            SegmentState.APPROVED,
-            SegmentState.FAILED,
-        }:
-            raise PipelineError(f"segment {index} cannot regenerate from {segment.state.value}")
-        self.raise_credit_ceiling(job_id, max_credits)
-        previous_key = Path(segment.output_key)
-        next_attempt = segment.attempt_count + 1
-        output_key = str(previous_key.with_name(f"output_raw_attempt_{next_attempt:02d}.mp4"))
-        changed = _now()
-        updated = self.set_segment_state(
-            job_id,
-            index,
-            SegmentState.PENDING,
-            output_key=output_key,
-            final_output_key=None,
-            trim_start_frame=None,
-            trim_end_frame=None,
-            approved_at=None,
-            prompt_override=prompt,
-            invocation_id=None,
-            retry_count=0,
-            next_attempt_at=None,
-            failure_code=None,
-            failure_message=None,
-            actual_duration_sec=None,
-        )
-        self.set_job_state(job_id, JobState.RUNNING)
-        self.record_event(
-            job_id,
-            "segment.regeneration_requested",
-            segment_index=index,
-            payload={
-                "output_key": output_key,
-                "incremental_credits": segment.estimated_credits,
-                "requested_at": _timestamp(changed),
-            },
-        )
-        return updated
+        """Reject paid regeneration while Ripple's retry system is disabled."""
+        del job_id, index, prompt, max_credits
+        raise PipelineError("paid regeneration is disabled")
 
     def set_job_state(self, job_id: str, state: JobState) -> JobRecord:
+        current = self.job(job_id)
+        if current.state == JobState.CANCELLED and state != JobState.CANCELLED:
+            return current
         changed = _now()
         with self._connection:
             self._connection.execute(
@@ -811,6 +763,47 @@ class PhaseCStore:
             )
         return self.job(job_id)
 
+    def cancel_job(self, job_id: str) -> JobRecord:
+        """Permanently stop a job and make each unfinished segment terminal."""
+        job = self.job(job_id)
+        if job.state == JobState.COMPLETE:
+            raise PipelineError("a completed job cannot be cancelled")
+        changed = _now()
+        terminal_segments = (
+            SegmentState.READY_FOR_REVIEW.value,
+            SegmentState.APPROVED.value,
+            SegmentState.FAILED.value,
+            SegmentState.CANCELLED.value,
+        )
+        placeholders = ",".join("?" for _ in terminal_segments)
+        with self._connection:
+            self._connection.execute(
+                "UPDATE jobs SET state = ?, audio_state = ?, updated_at = ? WHERE id = ?",
+                (JobState.CANCELLED.value, "CANCELLED", _timestamp(changed), job_id),
+            )
+            self._connection.execute(
+                f"""
+                UPDATE segments SET state = ?, next_attempt_at = NULL,
+                    failure_code = ?, failure_message = ?, updated_at = ?
+                WHERE job_id = ? AND state NOT IN ({placeholders})
+                """,
+                (
+                    SegmentState.CANCELLED.value,
+                    "USER.CANCELLED",
+                    "Cancelled by the user.",
+                    _timestamp(changed),
+                    job_id,
+                    *terminal_segments,
+                ),
+            )
+            self._event(
+                job_id,
+                "job.cancelled",
+                payload={"state": JobState.CANCELLED.value},
+                at=changed,
+            )
+        return self.job(job_id)
+
     def mark_complete(
         self,
         job_id: str,
@@ -819,6 +812,8 @@ class PhaseCStore:
         qc_output_key: str,
     ) -> JobRecord:
         """Atomically publish validated final and QC artifacts."""
+        if self.job(job_id).state == JobState.CANCELLED:
+            raise JobCancelledError("cancelled jobs cannot publish completed outputs")
         changed = _now()
         with self._connection:
             self._connection.execute(
@@ -879,6 +874,8 @@ class PhaseCStore:
         *,
         voice_track_path: Path | None = None,
     ) -> JobRecord:
+        if self.job(job_id).state == JobState.CANCELLED:
+            return self.job(job_id)
         changed = _now()
         with self._connection:
             if voice_track_path is None:
@@ -902,6 +899,8 @@ class PhaseCStore:
         state: SegmentState,
         **updates: object,
     ) -> SegmentRecord:
+        if self.job(job_id).state == JobState.CANCELLED and state != SegmentState.CANCELLED:
+            return self.segments(job_id)[index]
         allowed = {
             "source_uri",
             "source_uploaded_at",
@@ -947,12 +946,16 @@ class PhaseCStore:
         return self.segments(job_id)[index]
 
     def has_submission_budget(self, job_id: str, index: int) -> bool:
-        """Return true now that Runway, rather than Ripple, controls account spending."""
-        self.job(job_id)
-        self.segments(job_id)[index]
-        return True
+        """Return whether one paid submission fits the hard first-pass ceiling."""
+        job = self.job(job_id)
+        segment = self.segments(job_id)[index]
+        ceiling = job.max_credits if job.max_credits is not None else job.estimated_credits
+        video_ceiling = max(0, ceiling - job.audio_estimated_credits)
+        return job.submitted_credits + segment.estimated_credits <= video_ceiling
 
     def mark_submitted(self, job_id: str, index: int, invocation_id: str) -> SegmentRecord:
+        if self.job(job_id).state == JobState.CANCELLED:
+            raise JobCancelledError("cancelled jobs cannot submit new paid tasks")
         segment = self.segments(job_id)[index]
         changed = _now()
         with self._connection:
@@ -1024,27 +1027,8 @@ class PhaseCStore:
         )
 
 
-def _retry_for(code: str | None, policy: dict[str | None, Retry]) -> Retry:
-    if code is not None and (
-        code.startswith(("SAFETY.", "ASSET.INVALID"))
-        or ".SAFETY." in code
-        or code.endswith(".SAFETY")
-    ):
-        return Retry(0, 0)
-    if code is not None:
-        for prefix in (
-            "INTERNAL.BAD_OUTPUT",
-            "INPUT_PREPROCESSING.INTERNAL",
-            "THIRD_PARTY.UNAVAILABLE",
-            "INTERNAL",
-        ):
-            if code.startswith(prefix) and prefix in policy:
-                return policy[prefix]
-    return policy.get(code, policy.get(None, Retry(0, 0)))
-
-
 def _fresh(uploaded_at: datetime | None, *, now: datetime) -> bool:
-    return uploaded_at is not None and now - uploaded_at < timedelta(hours=20)
+    return uploaded_at is not None and (now - uploaded_at).total_seconds() < 20 * 60 * 60
 
 
 class PhaseCWorker:
@@ -1056,14 +1040,20 @@ class PhaseCWorker:
         store: PhaseCStore,
         gateway: GenerationGateway,
         audio_processor: VoiceProcessor | None = None,
-        retry_policy: dict[str | None, Retry] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        submission_lock: threading.Lock | None = None,
         now: Callable[[], datetime] = _now,
     ) -> None:
         self.store = store
         self.gateway = gateway
         self.audio_processor = audio_processor
-        self.retry_policy = retry_policy or RETRY_POLICY
+        self.cancel_requested = cancel_requested or (lambda: False)
+        self.submission_lock = submission_lock or threading.Lock()
         self.now = now
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_requested():
+            raise JobCancelledError("job was cancelled by the user")
 
     def _ensure_references(self, job: JobRecord) -> JobRecord:
         current = self.now()
@@ -1094,27 +1084,13 @@ class PhaseCWorker:
         )
         return self.store.job(job.id)
 
-    def _fail_or_retry(
+    def _fail(
         self,
         segment: SegmentRecord,
         *,
         failure_code: str | None,
         failure_message: str,
     ) -> None:
-        rule = _retry_for(failure_code, self.retry_policy)
-        if segment.retry_count < rule.max_retries:
-            next_attempt = self.now() + timedelta(seconds=rule.delay_sec)
-            self.store.set_segment_state(
-                segment.job_id,
-                segment.index,
-                SegmentState.PENDING,
-                invocation_id=None,
-                retry_count=segment.retry_count + 1,
-                next_attempt_at=next_attempt,
-                failure_code=failure_code,
-                failure_message=failure_message,
-            )
-            return
         self.store.set_segment_state(
             segment.job_id,
             segment.index,
@@ -1133,6 +1109,7 @@ class PhaseCWorker:
         prepared_voice: Path | None = None,
         clip_transcript: str | None = None,
     ) -> None:
+        self._check_cancelled()
         self.store.set_segment_state(job.id, segment.index, SegmentState.UPLOADING)
         current = self.now()
         try:
@@ -1179,9 +1156,8 @@ class PhaseCWorker:
                     prepared_voice,
                     role=f"segment_{segment.index}_voice",
                 )
-            # Every cut receives a new Runway task with its matching source section,
-            # matching voice, and current prompt. No generated output is ever fed
-            # into a later request, including retries.
+            # Every cut receives one Runway task with its matching source section,
+            # matching voice, and current prompt.
             prompt = generation_prompt(
                 job.prompt_template_id,
                 segment.prompt_override or job.prompt,
@@ -1204,8 +1180,16 @@ class PhaseCWorker:
             )
             if request.estimated_credits != segment.estimated_credits:
                 raise PipelineError("stored segment cost no longer matches the request")
-            task_id = self.gateway.submit(request)
-            self.store.mark_submitted(job.id, segment.index, task_id)
+            with self.submission_lock:
+                self._check_cancelled()
+                if not self.store.has_submission_budget(job.id, segment.index):
+                    raise CreditLimitError(
+                        "paid submission blocked by the job's first-pass credit ceiling"
+                    )
+                task_id = self.gateway.submit(request)
+                self.store.mark_submitted(job.id, segment.index, task_id)
+        except JobCancelledError:
+            return
         except RouterConfigurationError as error:
             self.store.set_segment_state(
                 job.id,
@@ -1217,7 +1201,7 @@ class PhaseCWorker:
             )
         except PipelineError as error:
             refreshed = self.store.segments(job.id)[segment.index]
-            self._fail_or_retry(
+            self._fail(
                 refreshed,
                 failure_code=None,
                 failure_message=str(error),
@@ -1225,7 +1209,7 @@ class PhaseCWorker:
 
     def _poll(self, segment: SegmentRecord) -> None:
         if segment.invocation_id is None:
-            self._fail_or_retry(
+            self._fail(
                 segment,
                 failure_code="STATE.INVALID",
                 failure_message="active segment has no Runway task ID",
@@ -1248,7 +1232,7 @@ class PhaseCWorker:
             self.store.set_segment_state(segment.job_id, segment.index, SegmentState.RUNNING)
             return
         if result.status in {"FAILED", "CANCELLED"}:
-            self._fail_or_retry(
+            self._fail(
                 segment,
                 failure_code=result.failure_code or result.status,
                 failure_message=result.failure_message or result.status.lower(),
@@ -1257,7 +1241,7 @@ class PhaseCWorker:
         if result.status != "SUCCEEDED":
             return
         if not result.output_urls:
-            self._fail_or_retry(
+            self._fail(
                 segment,
                 failure_code="GENERATION.EMPTY_OUTPUT",
                 failure_message="generation succeeded without an output URL",
@@ -1332,6 +1316,9 @@ class PhaseCWorker:
     def run_once(self, job_id: str) -> JobRecord:
         """Advance a durable job without sleeping."""
         job = self.store.job(job_id)
+        if job.state == JobState.CANCELLED:
+            return job
+        self._check_cancelled()
         if job.state == JobState.CONFIRMED:
             job = self.store.set_job_state(job_id, JobState.RUNNING)
         if job.state not in {JobState.RUNNING, JobState.REVIEW}:
@@ -1355,6 +1342,7 @@ class PhaseCWorker:
                 raise PipelineError("the preset voice processor is unavailable")
             self.store.set_audio_state(job_id, "PROCESSING")
             for segment in pending:
+                self._check_cancelled()
                 muted_video = segment.input_path.with_name("input_muted.mp4")
                 if not muted_video.is_file():
                     mute_video_track(segment.input_path, muted_video)
@@ -1385,6 +1373,7 @@ class PhaseCWorker:
                         prepared_transcripts[segment.index] = transcript
             job = self.store.set_audio_state(job_id, "READY")
         if pending:
+            self._check_cancelled()
             try:
                 job = self._ensure_references(job)
             except PipelineError as error:
@@ -1396,6 +1385,7 @@ class PhaseCWorker:
                 return self.store.job(job_id)
             # Submission happens for every eligible segment before any task is polled.
             for segment in pending:
+                self._check_cancelled()
                 self._submit(
                     job,
                     segment,
@@ -1411,11 +1401,16 @@ class PhaseCWorker:
             SegmentState.DOWNLOADING,
         }
         for segment in self.store.segments(job_id):
+            self._check_cancelled()
             if segment.state in active_states:
                 self._poll(segment)
 
         finished = self.store.segments(job_id)
-        terminal = {SegmentState.READY_FOR_REVIEW, SegmentState.FAILED}
+        terminal = {
+            SegmentState.READY_FOR_REVIEW,
+            SegmentState.FAILED,
+            SegmentState.CANCELLED,
+        }
         if finished and all(segment.state in terminal for segment in finished):
             return self.store.set_job_state(job_id, JobState.REVIEW)
         return self.store.job(job_id)
@@ -1431,7 +1426,7 @@ class PhaseCWorker:
         started = time.monotonic()
         while True:
             job = self.run_once(job_id)
-            if job.state == JobState.REVIEW:
+            if job.state in {JobState.REVIEW, JobState.CANCELLED}:
                 return job
             if time.monotonic() - started >= timeout_sec:
                 raise PipelineError(f"Phase C job {job_id} timed out after {timeout_sec:.0f}s")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import subprocess
 import threading
@@ -81,16 +82,18 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert "X-Ripple-Device" in html
     assert "No generations on this device yet." in html
     assert "Generation failed." in html
-    assert "Retry clip" in html
-    assert "Retry unavailable" in html
+    assert ">CANCEL</button>" in html
+    assert "/api/sessions/${targetSession}/cancel" in html
+    assert "/api/jobs/${targetJob}/cancel" in html
+    assert "Retry clip" not in html
+    assert "Retry current step" not in html
     assert "nonRetryableFailure" in html
     assert "Provider blocked this clip." in html
     assert "playback-failed" in html
     assert "events?device=" in html
     assert "ripple.pending.v1" in html
     assert "Reconnecting" in html
-    assert "Retry current step" in html
-    assert "Reusing completed clips and saved audio processing." in html
+    assert "Automatic retries are disabled" in html
     assert "scripts attached" in html
     assert "Approving all clips…" in html
     assert "data.error||" in html
@@ -105,7 +108,7 @@ def test_health_payload_exposes_render_commit(monkeypatch: pytest.MonkeyPatch) -
 def test_ripple_review_only_polls_live_states() -> None:
     html = render_pipeline_html()
 
-    assert "syncUpdates(data.state,forceLive)" in html
+    assert "syncUpdates(data.state,forceLive&&data.state!=='CANCELLED')" in html
     live_states = (
         "const live=forceLive||"
         "['RUNNING','STITCHING','DRAFT','CONFIRMED'].includes(state)"
@@ -147,6 +150,48 @@ def test_phase_e_server_serves_ui_and_empty_job_index(tmp_path: Path) -> None:
         assert "Ripple — video recreation" in html
         assert "Make it ripple." in html
         assert jobs == {"jobs": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_session_cancel_endpoint_is_terminal_and_persisted(tmp_path: Path) -> None:
+    try:
+        server = create_pipeline_server(
+            PipelineStudioConfig(port=0),
+            output_root=tmp_path / "jobs",
+            cache_dir=tmp_path / "cache",
+        )
+    except PermissionError:
+        pytest.skip("sandbox does not permit binding a loopback socket")
+    device_id = "d" * 32
+    session_id = "e" * 32
+    owner_hash = hashlib.sha256(device_id.encode()).hexdigest()
+    server.sessions[session_id] = {
+        "status": "ANALYZING",
+        "owner_hash": owner_hash,
+        "request": {"auto_run": True},
+    }
+    _persist_session(server.root, session_id, server.sessions[session_id])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/sessions/{session_id}/cancel",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Ripple-Device": device_id,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read())
+
+        assert payload["status"] == "CANCELLED"
+        assert server.cancel_events[session_id].is_set()
+        assert _load_sessions(server.root)[session_id]["status"] == "CANCELLED"
     finally:
         server.shutdown()
         server.server_close()
@@ -204,16 +249,26 @@ def test_detection_runs_in_secret_scrubbed_subprocess(
     output = tmp_path / "detection"
     captured: dict[str, object] = {}
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured["command"] = command
-        captured["environment"] = kwargs["env"]
-        output.mkdir(parents=True)
-        (output / "predictions.json").write_text('{"segments": []}', encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            captured["command"] = command
+            captured["environment"] = kwargs["env"]
+            output.mkdir(parents=True)
+            (output / "predictions.json").write_text(
+                '{"segments": []}', encoding="utf-8"
+            )
+
+        def poll(self) -> int:
+            return 0
+
+        def communicate(self) -> tuple[str, str]:
+            return "{}", ""
 
     monkeypatch.setenv("RUNWAYML_API_SECRET", "must-not-enter-worker")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "also-must-not-enter-worker")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
 
     predictions = _isolated_detection(video, output, tmp_path / "cache", timeout_sec=30)
 

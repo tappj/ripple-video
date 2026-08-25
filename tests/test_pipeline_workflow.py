@@ -104,6 +104,31 @@ def test_republished_seedance2_submission_supplies_generated_target_voice(
     assert outputs[voice_node_id]["audio"]["uri"] == "runway://legacy-voice"
 
 
+def test_workflow_cancellation_uses_invocation_delete_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeRunway:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def delete(self, path: str, *, cast_to: object) -> None:
+            calls.append((path, cast_to))
+
+    monkeypatch.setattr("cutdetect.pipeline.workflow_client.RunwayML", FakeRunway)
+    client = RunwayWorkflowClient(
+        api_key="key_test",
+        logger=JsonlCallLogger(tmp_path / "calls.jsonl"),
+        storage=LocalDiskStorage(tmp_path),
+        spec=SEEDANCE2_WORKFLOW,
+    )
+
+    client.cancel("invocation-one")
+
+    assert calls[0][0] == "/v1/workflow_invocations/invocation-one"
+
+
 def test_workflow_submission_overrides_every_reference_and_backend_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

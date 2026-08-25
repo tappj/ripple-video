@@ -34,6 +34,8 @@ from cutdetect.pipeline.grouping import requires_cut_partition
 from cutdetect.pipeline.orchestration import (
     DIRECT_API_ROUTE,
     GenerationGateway,
+    JobCancelledError,
+    JobRecord,
     JobState,
     PhaseCStore,
     PhaseCWorker,
@@ -224,10 +226,16 @@ class _PipelineServer(ThreadingHTTPServer):
     active_lock: threading.Lock
     active_preparations: set[str]
     preparation_lock: threading.Lock
+    cancel_events: dict[str, threading.Event]
+    submission_lock: threading.Lock
+    active_audio_tasks: dict[str, set[str]]
 
 
 def _start_stitch_operation(server: _PipelineServer, job_id: str) -> bool:
     """Start or resume one durable stitch operation without duplicating work."""
+    cancel_event = server.cancel_events.setdefault(job_id, threading.Event())
+    if cancel_event.is_set():
+        raise PipelineError("this job was cancelled and cannot be resumed")
     with server.active_lock:
         if job_id in server.active_jobs:
             return False
@@ -270,7 +278,13 @@ def _start_stitch_operation(server: _PipelineServer, job_id: str) -> bool:
                         "job.stitch_failed",
                         payload={"message": str(error)},
                     )
-                    worker_store.set_job_state(job_id, JobState.REVIEW)
+                    if cancel_event.is_set():
+                        worker_store.cancel_job(job_id)
+                    else:
+                        worker_store.set_job_state(job_id, JobState.REVIEW)
+                else:
+                    if cancel_event.is_set():
+                        worker_store.set_job_state(job_id, JobState.CANCELLED)
         finally:
             with server.active_lock:
                 server.active_jobs.discard(job_id)
@@ -319,6 +333,7 @@ def _isolated_detection(
     cache_dir: Path,
     *,
     timeout_sec: float,
+    cancel_event: threading.Event | None = None,
 ) -> Path:
     """Run memory-intensive detection in a process that exits before encoding."""
     environment = os.environ.copy()
@@ -332,31 +347,47 @@ def _isolated_detection(
         MKL_NUM_THREADS="1",
         NUMEXPR_NUM_THREADS="1",
     )
-    try:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "cutdetect",
-                "detect",
-                str(video),
-                "--output-dir",
-                str(output_dir),
-                "--cache-dir",
-                str(cache_dir),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            env=environment,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise PipelineError(
-            f"cut detection timed out after {timeout_sec / 60:.0f} minutes"
-        ) from error
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "cutdetect",
+            "detect",
+            str(video),
+            "--output-dir",
+            str(output_dir),
+            "--cache-dir",
+            str(cache_dir),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    started = time.monotonic()
+    while process.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            raise JobCancelledError("preparation was cancelled by the user")
+        if time.monotonic() - started >= timeout_sec:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            raise PipelineError(
+                f"cut detection timed out after {timeout_sec / 60:.0f} minutes"
+            )
+        time.sleep(0.1)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        detail = stderr.strip() or stdout.strip()
         raise PipelineError(f"isolated cut detection failed: {detail[-2000:]}")
     predictions = output_dir / "predictions.json"
     if not predictions.is_file():
@@ -372,6 +403,46 @@ def _device_hash(value: str) -> str:
 
 class _PipelineHandler(BaseHTTPRequestHandler):
     server: _PipelineServer
+
+    def _cancel_event(self, run_id: str) -> threading.Event:
+        with self.server.active_lock:
+            return self.server.cancel_events.setdefault(run_id, threading.Event())
+
+    def _register_audio_task(self, job_id: str, task_id: str) -> None:
+        with self.server.active_lock:
+            self.server.active_audio_tasks.setdefault(job_id, set()).add(task_id)
+
+    def _generation_gateway(
+        self,
+        job: JobRecord,
+        storage: LocalDiskStorage,
+        logger: JsonlCallLogger,
+    ) -> GenerationGateway:
+        route_id = job.route_id
+        model_id = cast(RunwayReferenceModel, job.model_id)
+        api_key = os.environ.get("RUNWAYML_API_SECRET", "")
+        if is_workflow_route(route_id):
+            return RunwayWorkflowGateway(
+                api_key=api_key,
+                logger=logger,
+                storage=storage,
+                spec=workflow_spec_for_route(route_id),
+            )
+        if route_id == DIRECT_API_ROUTE:
+            return RunwayDirectGateway(
+                api_key=api_key,
+                logger=logger,
+                storage=storage,
+            )
+        if route_id.startswith(MODEL_ROUTER_ROUTE_PREFIX):
+            return RunwayRouterGateway(
+                api_key=api_key,
+                logger=logger,
+                storage=storage,
+                config_id=router_config_id_from_route(route_id),
+                expected_model=model_id,
+            )
+        raise PipelineError(f"unsupported generation route: {route_id}")
 
     def _owner_hash(self, query: dict[str, list[str]] | None = None) -> str:
         value = self.headers.get("X-Ripple-Device", "")
@@ -805,6 +876,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         self._json({"status": "ANALYZING"}, HTTPStatus.ACCEPTED)
 
     def _launch_prepare(self, session_id: str) -> None:
+        if self._cancel_event(session_id).is_set():
+            return
         with self.server.preparation_lock:
             if session_id in self.server.active_preparations:
                 return
@@ -821,7 +894,14 @@ class _PipelineHandler(BaseHTTPRequestHandler):
 
     def _prepare_work(self, session_id: str) -> None:
         acquired = False
+        cancel_event = self._cancel_event(session_id)
+
+        def check_cancelled() -> None:
+            if cancel_event.is_set():
+                raise JobCancelledError("preparation was cancelled by the user")
+
         try:
+            check_cancelled()
             with self.server.session_lock:
                 state = dict(self.server.sessions[session_id])
             request = state.get("request")
@@ -849,8 +929,10 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     stage="Queued for analysis…",
                     message="Another source is being analyzed on this instance.",
                 )
-                self.server.analysis_lock.acquire()
+                while not self.server.analysis_lock.acquire(timeout=0.1):
+                    check_cancelled()
             acquired = True
+            check_cancelled()
             session_dir = self.server.root / "staging" / session_id
             predictions = session_dir / "detection" / "predictions.json"
             source_duration = probe_video(video).duration_sec
@@ -866,6 +948,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     session_dir / "detection",
                     self.server.cache_dir,
                     timeout_sec=self.server.config.detection_timeout_sec,
+                    cancel_event=cancel_event,
                 )
             elif not needs_partition:
                 self._update_session(
@@ -882,6 +965,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     else "Balancing short sections and selecting audio pauses for long shots."
                 ),
             )
+            check_cancelled()
 
             existing_job = None
             database = self.server.root / "orchestration.sqlite3"
@@ -891,6 +975,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             if existing_job is None:
 
                 def encoding_progress(index: int, total: int) -> None:
+                    check_cancelled()
                     self._update_session(
                         session_id,
                         stage=f"Encoding source clip {index} of {total}…",
@@ -928,6 +1013,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             else:
                 job = existing_job
 
+            check_cancelled()
             auto_run = body.get("auto_run") is True
             self._update_session(
                 session_id,
@@ -944,7 +1030,20 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 error=None,
             )
             if auto_run:
+                check_cancelled()
                 self._start_job(job.id, job.max_credits or job.estimated_credits)
+        except JobCancelledError:
+            with self.server.session_lock:
+                state = self.server.sessions.get(session_id)
+                if state is not None and state.get("status") != "CANCELLED":
+                    state.update(
+                        status="CANCELLED",
+                        stage="Cancelled",
+                        message="Cancelled by the user.",
+                        error=None,
+                        updated_at=time.time(),
+                    )
+                    _persist_session(self.server.root, session_id, state)
         except Exception as error:
             self._update_session(
                 session_id,
@@ -975,6 +1074,9 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             self._start_job(job.id, job.max_credits or job.estimated_credits)
 
     def _start_job(self, job_id: str, max_credits: int) -> None:
+        cancel_event = self._cancel_event(job_id)
+        if cancel_event.is_set():
+            raise PipelineError("this job was cancelled and cannot be resumed")
         with self.server.active_lock:
             if job_id in self.server.active_jobs:
                 return
@@ -1012,36 +1114,18 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     gateway_logger = JsonlCallLogger(
                         storage.path(f"jobs/{job_id}/runway_calls.jsonl")
                     )
-                    gateway: GenerationGateway
-                    if is_workflow_route(job.route_id):
-                        gateway = RunwayWorkflowGateway(
-                            api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
-                            logger=gateway_logger,
-                            storage=storage,
-                            spec=workflow_spec_for_route(job.route_id),
-                        )
-                    elif job.route_id == DIRECT_API_ROUTE:
-                        gateway = RunwayDirectGateway(
-                            api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
-                            logger=gateway_logger,
-                            storage=storage,
-                        )
-                    elif job.route_id.startswith(MODEL_ROUTER_ROUTE_PREFIX):
-                        gateway = RunwayRouterGateway(
-                            api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
-                            logger=gateway_logger,
-                            storage=storage,
-                            config_id=router_config_id_from_route(job.route_id),
-                            expected_model=cast(RunwayReferenceModel, job.model_id),
-                        )
-                    else:
-                        raise PipelineError(f"unsupported generation route: {job.route_id}")
+                    gateway = self._generation_gateway(job, storage, gateway_logger)
                     audio_processor = (
                         RunwayAudioProcessor(
                             api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
                             logger=gateway_logger,
                             storage=storage,
                             transcription_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+                            cancel_requested=cancel_event.is_set,
+                            submission_lock=self.server.submission_lock,
+                            task_registered=lambda task_id: self._register_audio_task(
+                                job_id, task_id
+                            ),
                         )
                         if job.voice_preset_id is not None
                         else None
@@ -1050,6 +1134,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         store=store,
                         gateway=gateway,
                         audio_processor=audio_processor,
+                        cancel_requested=cancel_event.is_set,
+                        submission_lock=self.server.submission_lock,
                     ).run_until_review(job_id)
             except Exception as error:
                 try:
@@ -1057,6 +1143,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         if store.job(job_id).state not in {
                             JobState.REVIEW,
                             JobState.COMPLETE,
+                            JobState.CANCELLED,
                         }:
                             store.set_job_state(job_id, JobState.FAILED)
                         store.record_event(
@@ -1071,8 +1158,104 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         threading.Thread(target=work, daemon=True).start()
 
     def _run_job(self, job_id: str, max_credits: int) -> None:
+        with PhaseCStore(self.server.root / "orchestration.sqlite3") as store:
+            job = store.job(job_id)
+            if job.state not in {
+                JobState.DRAFT,
+                JobState.ESTIMATING,
+                JobState.CONFIRMED,
+                JobState.RUNNING,
+            }:
+                raise PipelineError(
+                    f"job {job_id} cannot start from terminal state {job.state.value}"
+                )
         self._start_job(job_id, max_credits)
         self._json({"status": "RUNNING"}, HTTPStatus.ACCEPTED)
+
+    def _cancel_job(self, job_id: str, owner_hash: str) -> dict[str, object]:
+        """Make a job terminal, block races, and cancel every paid provider task."""
+        storage = self._storage()
+        database = storage.path("orchestration.sqlite3")
+        event = self._cancel_event(job_id)
+        event.set()
+        with self.server.submission_lock, PhaseCStore(database) as store:
+            self._require_job_owner(store, job_id, owner_hash)
+            job = store.job(job_id)
+            invocation_ids = tuple(
+                segment.invocation_id
+                for segment in store.segments(job_id)
+                if segment.invocation_id
+            )
+            store.cancel_job(job_id)
+
+        logger = JsonlCallLogger(storage.path(f"jobs/{job_id}/runway_calls.jsonl"))
+        errors: list[str] = []
+        if invocation_ids:
+            try:
+                gateway = self._generation_gateway(job, storage, logger)
+            except Exception as error:
+                errors.append(str(error))
+            else:
+                for invocation_id in dict.fromkeys(invocation_ids):
+                    try:
+                        gateway.cancel(invocation_id)
+                    except Exception as error:
+                        errors.append(str(error))
+
+        with self.server.active_lock:
+            audio_task_ids = tuple(self.server.active_audio_tasks.pop(job_id, set()))
+        try:
+            audio_processor = RunwayAudioProcessor(
+                api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
+                logger=logger,
+                storage=storage,
+            )
+            cancelled_audio = audio_processor.cancel_job(
+                job_id,
+                extra_task_ids=audio_task_ids,
+            )
+        except Exception as error:
+            cancelled_audio = ()
+            errors.append(str(error))
+
+        with PhaseCStore(database) as store:
+            if errors:
+                store.record_event(
+                    job_id,
+                    "job.cancel_provider_error",
+                    payload={"messages": errors},
+                )
+            payload = job_status(store, job_id)
+        payload["cancelled_invocations"] = len(invocation_ids)
+        payload["cancelled_audio_tasks"] = len(cancelled_audio)
+        if errors:
+            payload["cancel_errors"] = errors
+        return payload
+
+    def _cancel_session(self, session_id: str, owner_hash: str) -> dict[str, object]:
+        """Permanently stop preparation and any job created from the same session."""
+        event = self._cancel_event(session_id)
+        event.set()
+        with self.server.session_lock:
+            state = self.server.sessions.get(session_id)
+            if state is None or state.get("owner_hash") != owner_hash:
+                raise PipelineError("this upload session belongs to another device")
+            state.update(
+                status="CANCELLED",
+                stage="Cancelled",
+                message="Cancelled by the user.",
+                error=None,
+                updated_at=time.time(),
+            )
+            snapshot = dict(state)
+            _persist_session(self.server.root, session_id, state)
+        database = self.server.root / "orchestration.sqlite3"
+        if database.is_file():
+            with PhaseCStore(database) as store:
+                has_job = store.job_owned_by(session_id, owner_hash)
+            if has_job:
+                return self._cancel_job(session_id, owner_hash)
+        return {key: value for key, value in snapshot.items() if key != "owner_hash"}
 
     def do_POST(self) -> None:
         route = unquote(urlparse(self.path).path)
@@ -1105,12 +1288,18 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ("api", "sessions") and parts[3] == "prepare":
                 self._prepare(parts[2], self._body())
                 return
+            if len(parts) == 4 and parts[:2] == ("api", "sessions") and parts[3] == "cancel":
+                self._json(self._cancel_session(parts[2], self._owner_hash()))
+                return
             if len(parts) >= 4 and parts[:2] == ("api", "jobs") and _valid_id(parts[2]):
                 job_id = parts[2]
                 owner_hash = self._owner_hash()
                 storage = self._storage()
                 with PhaseCStore(storage.path("orchestration.sqlite3")) as owner_store:
                     self._require_job_owner(owner_store, job_id, owner_hash)
+                if len(parts) == 4 and parts[3] == "cancel":
+                    self._json(self._cancel_job(job_id, owner_hash))
+                    return
                 if len(parts) == 4 and parts[3] == "run":
                     body = self._body()
                     self._run_job(job_id, int(str(body.get("max_credits", 0))))
@@ -1146,17 +1335,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                         elif action == "approve":
                             self._json(asdict(review.approve(job_id, index)))
                         elif action == "regenerate":
-                            body = self._body()
-                            self._json(
-                                asdict(
-                                    review.regenerate(
-                                        job_id,
-                                        index,
-                                        prompt=str(body.get("prompt", "")),
-                                        max_credits=int(str(body.get("max_credits", 0))),
-                                    )
-                                )
-                            )
+                            raise PipelineError("paid regeneration is disabled")
                         else:
                             raise PipelineError(f"unknown review action: {action}")
                         return
@@ -1189,6 +1368,9 @@ def create_pipeline_server(
     server.active_lock = threading.Lock()
     server.active_preparations = set()
     server.preparation_lock = threading.Lock()
+    server.cancel_events = {}
+    server.submission_lock = threading.Lock()
+    server.active_audio_tasks = {}
     database = server.root / "orchestration.sqlite3"
     if database.is_file():
         with PhaseCStore(database) as store:

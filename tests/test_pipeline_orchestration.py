@@ -12,7 +12,6 @@ from cutdetect.pipeline.orchestration import (
     JobState,
     PhaseCStore,
     PhaseCWorker,
-    Retry,
     SegmentState,
     format_sse_events,
 )
@@ -376,10 +375,10 @@ def test_reopens_database_and_resumes_existing_invocations(tmp_path: Path) -> No
     reopened.close()
 
 
-def test_failed_clip_retries_without_resubmitting_successes(tmp_path: Path) -> None:
+def test_failed_clip_is_not_retried(tmp_path: Path) -> None:
     store = PhaseCStore(tmp_path / "jobs.sqlite3")
     job_id = _create_job(store, tmp_path, 2)
-    store.confirm(job_id, 3 * SEGMENT_CREDITS)
+    store.confirm(job_id, 2 * SEGMENT_CREDITS)
 
     def outcomes(submission_index: int) -> list[GenerationPoll]:
         if submission_index == 0:
@@ -393,36 +392,49 @@ def test_failed_clip_retries_without_resubmitting_successes(tmp_path: Path) -> N
         return [GenerationPoll("SUCCEEDED", output_urls=("https://output",))]
 
     gateway = FakeGateway(outcomes, tmp_path)
-    immediate_retry = {
-        "INTERNAL.BAD_OUTPUT": Retry(2, 0),
-        None: Retry(0, 0),
-    }
-    worker = PhaseCWorker(store=store, gateway=gateway, retry_policy=immediate_retry)
+    worker = PhaseCWorker(store=store, gateway=gateway)
 
-    first = worker.run_once(job_id)
-    first_segments = store.segments(job_id)
-    assert first.state == JobState.RUNNING
-    assert first_segments[0].state == SegmentState.PENDING
-    assert first_segments[1].state == SegmentState.READY_FOR_REVIEW
-
-    second = worker.run_once(job_id)
+    final = worker.run_once(job_id)
     final_segments = store.segments(job_id)
-    assert second.state == JobState.REVIEW
-    assert final_segments[0].attempt_count == 2
+    assert final.state == JobState.REVIEW
+    assert final_segments[0].state == SegmentState.FAILED
+    assert final_segments[0].attempt_count == 1
     assert final_segments[1].attempt_count == 1
     assert gateway.uploads.count("segment_1") == 1
     assert gateway.uploads.count("segment_0") == 1
-    assert store.job(job_id).submitted_credits == 3 * SEGMENT_CREDITS
+    assert store.job(job_id).submitted_credits == 2 * SEGMENT_CREDITS
     store.close()
 
 
-def test_confirmation_does_not_impose_an_internal_credit_ceiling(tmp_path: Path) -> None:
+def test_confirmation_imposes_first_pass_credit_ceiling(tmp_path: Path) -> None:
     store = PhaseCStore(tmp_path / "jobs.sqlite3")
     job_id = _create_job(store, tmp_path, 2)
 
     confirmed = store.confirm(job_id, 0)
 
     assert confirmed.state == JobState.CONFIRMED
-    assert confirmed.max_credits is None
+    assert confirmed.max_credits == 2 * SEGMENT_CREDITS
     assert store.has_submission_budget(job_id, 0) is True
+    store.close()
+
+
+def test_cancelled_job_is_terminal_and_cannot_resume(tmp_path: Path) -> None:
+    store = PhaseCStore(tmp_path / "jobs.sqlite3")
+    job_id = _create_job(store, tmp_path, 2)
+    store.confirm(job_id, 2 * SEGMENT_CREDITS)
+    store.set_job_state(job_id, JobState.RUNNING)
+    store.mark_submitted(job_id, 0, "task-zero")
+    store.mark_submitted(job_id, 1, "task-one")
+
+    cancelled = store.cancel_job(job_id)
+
+    assert cancelled.state == JobState.CANCELLED
+    assert cancelled.audio_state == "CANCELLED"
+    assert all(
+        segment.state == SegmentState.CANCELLED for segment in store.segments(job_id)
+    )
+    gateway = FakeGateway(lambda _index: [], tmp_path)
+    resumed = PhaseCWorker(store=store, gateway=gateway).run_once(job_id)
+    assert resumed.state == JobState.CANCELLED
+    assert gateway.submissions == []
     store.close()

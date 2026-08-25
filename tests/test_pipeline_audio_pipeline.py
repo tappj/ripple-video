@@ -82,10 +82,6 @@ def _processor(
 
     monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.extract_audio_track", fake_extract)
     monkeypatch.setattr("cutdetect.pipeline.audio_pipeline.time.sleep", lambda _delay: None)
-    monkeypatch.setattr(
-        "cutdetect.pipeline.audio_pipeline.random.uniform", lambda _start, _end: 0
-    )
-
     expected_duration = duration_sec
 
     def fake_fit(source: Path, destination: Path, *, duration_sec: float) -> Path:
@@ -204,7 +200,7 @@ def test_transcription_outage_does_not_fail_voice_generation(
     monkeypatch.setattr(processor, "_request_transcript", fail_transcription)
 
     assert processor.transcribe_clip(source, job_id="fallback", segment_index=0) is None
-    assert attempts == 4
+    assert attempts == 1
 
 
 def test_short_clip_is_padded_and_still_runs_voice_isolation(
@@ -225,7 +221,7 @@ def test_short_clip_is_padded_and_still_runs_voice_isolation(
     assert speech["remove_background_noise"] is False
 
 
-def test_transient_speech_submission_retries_without_repeating_isolation(
+def test_transient_speech_submission_is_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     processor, calls = _processor(
@@ -237,15 +233,16 @@ def test_transient_speech_submission_retries_without_repeating_isolation(
     source = tmp_path / "source.mp4"
     source.write_bytes(b"video")
 
-    processor.convert_clip_voice(
-        source, preset_id="Maya", job_id="retry", segment_index=1
-    )
+    with pytest.raises(PipelineError, match="speech-to-speech submission failed"):
+        processor.convert_clip_voice(
+            source, preset_id="Maya", job_id="retry", segment_index=1
+        )
 
     assert [name for name, _payload in calls].count("isolation") == 1
-    assert [name for name, _payload in calls].count("speech") == 3
+    assert [name for name, _payload in calls].count("speech") == 1
 
 
-def test_persistent_speech_submission_stops_after_bounded_attempts(
+def test_persistent_speech_submission_stops_after_one_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     processor, calls = _processor(
@@ -259,17 +256,17 @@ def test_persistent_speech_submission_stops_after_bounded_attempts(
 
     with pytest.raises(
         PipelineError,
-        match="speech-to-speech submission failed for audio clip 2 after 4 attempts",
+        match="speech-to-speech submission failed for audio clip 2",
     ):
         processor.convert_clip_voice(
             source, preset_id="Maya", job_id="persistent", segment_index=1
         )
 
     assert [name for name, _payload in calls].count("isolation") == 1
-    assert [name for name, _payload in calls].count("speech") == 4
+    assert [name for name, _payload in calls].count("speech") == 1
 
 
-def test_nonretryable_speech_submission_fails_immediately(
+def test_invalid_speech_submission_fails_immediately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     processor, calls = _processor(
@@ -284,7 +281,7 @@ def test_nonretryable_speech_submission_fails_immediately(
 
     with pytest.raises(
         PipelineError,
-        match="speech-to-speech submission failed for audio clip 1 after 1 attempt",
+        match="speech-to-speech submission failed for audio clip 1",
     ):
         processor.convert_clip_voice(
             source, preset_id="Maya", job_id="invalid", segment_index=0

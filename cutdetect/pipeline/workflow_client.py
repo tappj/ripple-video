@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from runwayml import RunwayML
+from runwayml._types import NoneType
 from runwayml.types.workflow_invocation_retrieve_response import Failed, Succeeded
 from runwayml.types.workflow_run_params import NodeOutputsNodeOutputsItem
 
@@ -353,6 +354,31 @@ class RunwayWorkflowClient:
             return WorkflowPoll("RUNNING", progress=progress)
         return WorkflowPoll("PENDING")
 
+    def cancel(self, invocation_id: str) -> None:
+        """Cancel a workflow invocation through Runway's invocation endpoint."""
+        started = time.monotonic()
+        try:
+            self._client.delete(
+                f"/v1/workflow_invocations/{invocation_id}",
+                cast_to=NoneType,
+            )
+        except Exception as error:
+            status = getattr(error, "status_code", None)
+            if status == 404:
+                return
+            self._logger.write(
+                "runway.workflow.cancel_failed",
+                invocation_id=invocation_id,
+                status_code=status,
+                error_type=type(error).__name__,
+            )
+            raise PipelineError(f"Runway workflow cancellation failed: {error}") from error
+        self._logger.write(
+            "runway.workflow.cancelled",
+            invocation_id=invocation_id,
+            latency_sec=time.monotonic() - started,
+        )
+
     def download(self, url: str, destination_key: str) -> Path:
         """Persist an expiring workflow output URL immediately."""
         started = time.monotonic()
@@ -413,6 +439,9 @@ class RunwayWorkflowGateway:
             failure_code=result.failure_code,
             failure_message=result.failure_message,
         )
+
+    def cancel(self, task_id: str) -> None:
+        self._client.cancel(task_id)
 
     def download(self, url: str, destination_key: str) -> Path:
         return self._client.download(url, destination_key)

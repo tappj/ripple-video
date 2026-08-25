@@ -54,7 +54,7 @@ isolated original speech, caches it with that clip, and appends it to only the m
 video prompt. If the key or transcription service is unavailable, generation continues
 with the transformed audio and the established prompt.
 
-## Runway regeneration pipeline
+## Runway generation pipeline
 
 Phase A includes a no-charge preflight and a cost-capped single-segment proof. First,
 preview the exact request duration, output ratio, internal cuts, and estimated credits:
@@ -64,8 +64,8 @@ preview the exact request duration, output ratio, internal cuts, and estimated c
   --start 4 --end 12 --model seedance2 --dry-run
 ```
 
-The estimate is informational. Ripple no longer applies its own per-job credit ceiling;
-Runway account balance and billing limits still apply to every paid submission and retry.
+Ripple applies a hard per-job ceiling equal to the first-pass estimate. Every clip receives
+at most one paid submission; provider failures are terminal and are never retried automatically.
 
 ```bash
 .venv311/bin/cutdetect pipeline gen-one source.mp4 face.jpg voice.wav \
@@ -118,8 +118,8 @@ any time with:
 ```
 
 Running is an explicit paid action. Inspect `estimated_credits` from `prepare-job` before
-submitting. Ripple does not impose an internal ceiling, so Runway account-level billing
-limits are the final spending control:
+submitting. Ripple stores that estimate as the immutable job ceiling and refuses any
+submission that would exceed it:
 
 ```bash
 .venv311/bin/cutdetect pipeline run-job JOB_ID --max-credits ESTIMATED_CREDITS
@@ -132,9 +132,9 @@ Every Workflow is fixed to 9:16 and a 15-second maximum; Ripple sends each sourc
 independent invocation and trims the result to the source group's exact duration. The worker uploads
 the face and voice once, gives every clip a separate source upload and a brand-new invocation,
 submits every eligible clip before polling, saves outputs immediately, and records state transitions
-in SQLite. Re-running the same command resumes existing invocation IDs instead of rebilling completed
-clips. Use `--once` to advance one worker cycle and exit. Older Workflow/direct/router jobs remain
-resumable.
+in SQLite. Provider failures remain failed without a new paid attempt. Re-running the same command
+only resumes existing invocation IDs; cancelled jobs are terminal. Use `--once` to advance one worker
+cycle and exit.
 
 The **UGC product test** tab provides a controlled two-route comparison. It sends the same
 source cut, avatar image, product image, and prompt either to Seedance 2.0 through the
@@ -157,15 +157,8 @@ After generation reaches `REVIEW`, inspect the complete gate:
 `review-trim` uses the conservative silence-plus-low-motion suggestion unless an explicit
 `--end-frame` is supplied. It writes `output_final.mp4` while keeping `output_raw.mp4`
 unchanged. `review-approve-all` refuses to proceed if any clip is still running or failed.
-An edited regeneration is queued and billed as a separate generation:
-
-```bash
-.venv311/bin/cutdetect pipeline review-regenerate JOB_ID 0 \
-  --prompt "EDITED PROMPT" --max-credits NEW_CEILING
-```
-
-The next `run-job` invocation submits only that queued segment and preserves the previous
-raw attempt. Stitching remains locked until `review-status` reports `can_stitch: true`.
+Paid regeneration is currently disabled. Stitching remains locked until `review-status`
+reports `can_stitch: true`.
 
 ## Complete local platform
 
@@ -178,7 +171,8 @@ Start the Phase E interface with:
 It opens at `http://127.0.0.1:8790/`. Stop it with `Ctrl+C`; running the same command
 resumes from the durable local database. The interface covers reference uploads, cut
 detection and grouping, editable versioned prompts, model/output settings, exact credit
-confirmation, live task progress, source/output review, trim and approval, regeneration,
+confirmation, live task progress, immediate terminal cancellation, source/output review,
+trim and approval,
 validated stitching, and final/QC downloads. The Runway key remains server-side in the
 ignored `.env` file and is never included in browser responses.
 
