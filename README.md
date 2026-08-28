@@ -81,20 +81,6 @@ generation and <u>approve</u>, <u>retry</u>, or <u>trim</u> the given clip. Once
 
 For reference this is how much it costs on average for a video generation without retries:
 
-   Final video length    Estimated groups    Estimated credits    Approximate cost
-  ━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
-           15 seconds                   1                 ~600                 ~$6
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           20 seconds                   3               ~1,800                ~$18
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           30 seconds                   4               ~2,400                ~$24
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           40 seconds                   5               ~3,000                ~$30
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           50 seconds                   7               ~4,200                ~$42
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           60 seconds                   8               ~4,800                ~$48
-  ────────────────────  ──────────────────  ───────────────────  ──────────────────
-           90 seconds                  12               ~7,200                ~$72
+<img width="598" height="310" alt="Screenshot 2026-08-27 at 8 08 11 PM" src="https://github.com/user-attachments/assets/e7bc54ae-a3f0-4083-a508-2cb733da580b" />
 
 DM me your results @x.com/jtapp_99 if you want, thanks!
