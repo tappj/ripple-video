@@ -52,7 +52,7 @@ ElevenLabs: (optional)
      ```dotenv
      ELEVENLABS_API_KEY=your_key_here
 
-Edit `.env.example` and remove the '.example', then add secret values ONLY to `.env`. 
+Edit `.env.example` and remove the '.example', then add secret values ONLY to `.env`.
 Never commit `.env`, paste keys into documentation and keep these private.
 
 ## Ripple Flow
