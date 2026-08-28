@@ -69,7 +69,7 @@ will take time. Once it is done clipping them, it will immediately start video g
 Runway credits, you will be able to run up to 3 parallel generations at a time. If not, they will go 1 by 1 and take a bit longer.
 
 3: After generation is finished (est. 5-10 min), you will be taken to the **Review** stage. Here you can view each individual clip 
-generation and <u>approve</u>, <u>retry</u>, or <u>trim</u> the given clip. Once all clips are approved, press **Assemble** for the final result
+generation and *approve*, *retry*, or *trim* the given clip. Once all clips are approved, press **Assemble** for the final result
 
 <img width="2880" height="1800" alt="Ripple" src="https://github.com/user-attachments/assets/cd26795c-620d-44bc-afb5-a4f1d194cd19" />
 
