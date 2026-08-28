@@ -11,14 +11,19 @@ Clone the repo, then install the working environment and variables:
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/python -m pip install -e '.[features,baselines,dev]'
-mkdir -p .cutdetect/models
-curl -L https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task \
-  -o .cutdetect/models/face_landmarker.task
-.venv/bin/cutdetect studio
+  .venv/bin/python -m pip install -e '.[features]'
+
+  mkdir -p .cutdetect/models
+  curl --fail --location \
+
+    https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+    \
+    --output .cutdetect/models/face_landmarker.task
+
+  .venv/bin/cutdetect pipeline studio
 ```
 
-Then open `http://127.0.0.1:8787/`
+Then open `[http://127.0.0.1:8787/](http://127.0.0.1:8790)`
 
 For the existing local installation, start up Ripple anytime with:
 
