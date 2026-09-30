@@ -19,8 +19,6 @@ services:
         value: 55cd8a57-dd96-4401-b9d0-0ab506130f77
       - key: RUNWAY_PRODUCT_CLONE_WORKFLOW_ID
         value: 0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0
-      - key: RIPPLE_ACCESS_PASSWORD
-        generateValue: true
       - key: RIPPLE_DATA_DIR
         value: /data/ripple
       - key: RIPPLE_CACHE_DIR
