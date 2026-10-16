@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cutdetect"
 version = "0.1.0"
-description = "Jump-cut detection for talking-head video"
+description = "Local-first jump-cut detection and AI-assisted video recreation"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

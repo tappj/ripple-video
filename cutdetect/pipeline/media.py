@@ -2,12 +2,56 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 from pathlib import Path
 
 from cutdetect.ingest import probe_video
 from cutdetect.pipeline.runway_client import PipelineError
+
+RAW_VOICE_MAX_SEC = 11.0
+
+
+def raw_voice_duration(source: Path) -> float:
+    """Return the duration of one decodable audio reference."""
+    executable = shutil.which("ffprobe")
+    if executable is None:
+        raise PipelineError("required executable not found on PATH: ffprobe")
+    completed = subprocess.run(
+        [
+            executable,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as error:
+        detail = completed.stderr.strip() or "duration is unavailable"
+        raise PipelineError(f"could not read the uploaded audio: {detail}") from error
+    if completed.returncode != 0 or not math.isfinite(duration) or duration <= 0:
+        detail = completed.stderr.strip() or "no decodable audio was found"
+        raise PipelineError(f"could not read the uploaded audio: {detail}")
+    return duration
+
+
+def validate_raw_voice_sample(source: Path) -> float:
+    """Validate an uploaded voice reference and enforce Ripple's duration ceiling."""
+    duration = raw_voice_duration(source)
+    if duration > RAW_VOICE_MAX_SEC + 0.001:
+        raise PipelineError(
+            f"uploaded voice audio must be {RAW_VOICE_MAX_SEC:g} seconds or shorter"
+        )
+    return duration
 
 
 def mute_video_track(source: Path, destination: Path) -> Path:

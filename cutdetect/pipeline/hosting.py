@@ -60,6 +60,8 @@ def main() -> None:
             port=settings.port,
             max_upload_bytes=settings.max_upload_bytes,
             access_password=settings.access_password,
+            enable_transcription=os.environ.get("RIPPLE_ENABLE_TRANSCRIPTION", "").lower()
+            in {"1", "true", "yes"},
         ),
         output_root=settings.output_root,
         cache_dir=settings.cache_dir,

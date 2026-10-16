@@ -31,6 +31,8 @@ from cutdetect.pipeline.audio_pipeline import (
 )
 from cutdetect.pipeline.capabilities import MODEL_CAPABILITIES
 from cutdetect.pipeline.grouping import requires_cut_partition
+from cutdetect.pipeline.guardrails import AdmissionError, RequestGate
+from cutdetect.pipeline.media import validate_raw_voice_sample
 from cutdetect.pipeline.orchestration import (
     DIRECT_API_ROUTE,
     GenerationGateway,
@@ -82,6 +84,11 @@ class PipelineStudioConfig:
     upload_chunk_bytes: int = 1024 * 1024
     access_password: str | None = None
     detection_timeout_sec: float = 1800.0
+    max_source_duration_sec: float = 60.0
+    max_job_credits: int = 600
+    max_active_jobs: int = 2
+    max_active_preparations: int = 2
+    enable_transcription: bool = False
 
 
 def _boot_payload() -> dict[str, object]:
@@ -229,6 +236,7 @@ class _PipelineServer(ThreadingHTTPServer):
     cancel_events: dict[str, threading.Event]
     submission_lock: threading.Lock
     active_audio_tasks: dict[str, set[str]]
+    request_gate: RequestGate
 
 
 def _start_stitch_operation(server: _PipelineServer, job_id: str) -> bool:
@@ -503,6 +511,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         self._send((json.dumps(value, default=str) + "\n").encode(), "application/json", status)
 
     def _error(self, error: Exception, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
+        if isinstance(error, AdmissionError):
+            status = error.status
         self._json({"error": str(error)}, status)
 
     def _body(self) -> dict[str, object]:
@@ -780,6 +790,7 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             raise PipelineError(f"unsupported {role} file type: {suffix}")
         destination = self.server.root / "staging" / session_id / f"{role}{suffix}"
         destination.parent.mkdir(parents=True, exist_ok=True)
+        duration_sec: float | None = None
         remaining = length
         with destination.open("wb") as output:
             while remaining:
@@ -788,13 +799,22 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                     raise PipelineError("upload ended unexpectedly")
                 output.write(chunk)
                 remaining -= len(chunk)
+        if role == "audio":
+            try:
+                duration_sec = validate_raw_voice_sample(destination)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
         with self.server.session_lock:
             state = self.server.sessions.setdefault(session_id, {"status": "UPLOADING"})
             state.update(owner_hash=owner_hash)
             state[role] = str(destination)
             state["updated_at"] = time.time()
             _persist_session(self.server.root, session_id, state)
-        self._json({"role": role, "filename": filename})
+        payload: dict[str, object] = {"role": role, "filename": filename}
+        if duration_sec is not None:
+            payload["duration_sec"] = duration_sec
+        self._json(payload)
 
     def _prepare(self, session_id: str, body: dict[str, object]) -> None:
         if not _valid_id(session_id) or body.get("consent") is not True:
@@ -824,6 +844,8 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 if experience == "clone"
                 else None
             )
+            if audio is not None and voice_preset_id is not None:
+                raise PipelineError("choose either an uploaded voice or a preset voice")
             product_route = str(body.get("product_route", "router"))
             if experience == "product" and product_route not in {"router", "workflow"}:
                 raise PipelineError("unsupported product test route")
@@ -881,6 +903,11 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         with self.server.preparation_lock:
             if session_id in self.server.active_preparations:
                 return
+            if len(self.server.active_preparations) >= self.server.config.max_active_preparations:
+                raise AdmissionError(
+                    "Ripple is busy. Please try again after the current videos finish preparing.",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
             self.server.active_preparations.add(session_id)
 
         def work() -> None:
@@ -936,6 +963,11 @@ class _PipelineHandler(BaseHTTPRequestHandler):
             session_dir = self.server.root / "staging" / session_id
             predictions = session_dir / "detection" / "predictions.json"
             source_duration = probe_video(video).duration_sec
+            if source_duration > self.server.config.max_source_duration_sec:
+                raise PipelineError(
+                    f"Source videos must be {self.server.config.max_source_duration_sec:g} "
+                    "seconds or shorter."
+                )
             needs_partition = requires_cut_partition(source_duration)
             if needs_partition and not predictions.is_file():
                 self._update_session(
@@ -1034,16 +1066,16 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                 self._start_job(job.id, job.max_credits or job.estimated_credits)
         except JobCancelledError:
             with self.server.session_lock:
-                state = self.server.sessions.get(session_id)
-                if state is not None and state.get("status") != "CANCELLED":
-                    state.update(
+                cancelled_state = self.server.sessions.get(session_id)
+                if cancelled_state is not None and cancelled_state.get("status") != "CANCELLED":
+                    cancelled_state.update(
                         status="CANCELLED",
                         stage="Cancelled",
                         message="Cancelled by the user.",
                         error=None,
                         updated_at=time.time(),
                     )
-                    _persist_session(self.server.root, session_id, state)
+                    _persist_session(self.server.root, session_id, cancelled_state)
         except Exception as error:
             self._update_session(
                 session_id,
@@ -1080,11 +1112,28 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         with self.server.active_lock:
             if job_id in self.server.active_jobs:
                 return
+            if len(self.server.active_jobs) >= self.server.config.max_active_jobs:
+                raise AdmissionError(
+                    "Ripple is busy. Please try again after the current generations finish.",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
             self.server.active_jobs.add(job_id)
         storage = LocalDiskStorage(self.server.root)
         try:
             with PhaseCStore(storage.path("orchestration.sqlite3")) as resume_store:
                 resumable = resume_store.job(job_id)
+                if resumable.estimated_credits > self.server.config.max_job_credits:
+                    raise PipelineError(
+                        f"This demo allows at most {self.server.config.max_job_credits} "
+                        "estimated Runway credits per job. Please use a shorter video."
+                    )
+                if probe_video(resumable.source_path).duration_sec > (
+                    self.server.config.max_source_duration_sec
+                ):
+                    raise PipelineError(
+                        f"Source videos must be {self.server.config.max_source_duration_sec:g} "
+                        "seconds or shorter."
+                    )
                 if resumable.state == JobState.FAILED:
                     if not any(
                         segment.state == SegmentState.PENDING
@@ -1120,7 +1169,11 @@ class _PipelineHandler(BaseHTTPRequestHandler):
                             api_key=os.environ.get("RUNWAYML_API_SECRET", ""),
                             logger=gateway_logger,
                             storage=storage,
-                            transcription_api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+                            transcription_api_key=(
+                                os.environ.get("ELEVENLABS_API_KEY", "")
+                                if self.server.config.enable_transcription
+                                else ""
+                            ),
                             cancel_requested=cancel_event.is_set,
                             submission_lock=self.server.submission_lock,
                             task_registered=lambda task_id: self._register_audio_task(
@@ -1263,6 +1316,9 @@ class _PipelineHandler(BaseHTTPRequestHandler):
         try:
             if self._require_authorization():
                 return
+            # Cancellation must remain available even after a client reaches its limit.
+            if not (len(parts) == 4 and parts[3] == "cancel"):
+                self.server.request_gate.check(self._owner_hash())
             if len(parts) == 3 and parts[:2] == ("api", "voice-previews"):
                 preset = validate_voice_preset(parts[2])
                 if preset is None:
@@ -1371,6 +1427,7 @@ def create_pipeline_server(
     server.cancel_events = {}
     server.submission_lock = threading.Lock()
     server.active_audio_tasks = {}
+    server.request_gate = RequestGate()
     database = server.root / "orchestration.sqlite3"
     if database.is_file():
         with PhaseCStore(database) as store:

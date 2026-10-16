@@ -10,17 +10,15 @@ services:
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: RUNWAY_SEEDANCE_ROUTER_CONFIG_ID
-        value: ripple-seedance-2
+        sync: false
       - key: RUNWAY_SEEDANCE2_WORKFLOW_ID
-        value: fecc0662-a1e1-4941-b84a-76df0bde1e4f
+        sync: false
       - key: RUNWAY_SEEDANCE25_WORKFLOW_ID
-        value: 4af4fdf6-a371-4a73-b02d-fdbf116186d5
+        sync: false
       - key: RUNWAY_HAILUO3_WORKFLOW_ID
-        value: 55cd8a57-dd96-4401-b9d0-0ab506130f77
+        sync: false
       - key: RUNWAY_PRODUCT_CLONE_WORKFLOW_ID
-        value: 0b9a4bd0-27a2-4ef7-a2d3-ba1d89a8a0d0
-      - key: RIPPLE_ACCESS_PASSWORD
-        generateValue: true
+        sync: false
       - key: RIPPLE_DATA_DIR
         value: /data/ripple
       - key: RIPPLE_CACHE_DIR

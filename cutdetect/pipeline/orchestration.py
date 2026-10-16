@@ -38,6 +38,7 @@ from cutdetect.pipeline.media import (
     mute_video_track,
     preserve_source_audio,
     trim_generated_duration,
+    validate_raw_voice_sample,
 )
 from cutdetect.pipeline.runway_client import (
     GenerationPoll,
@@ -428,7 +429,9 @@ class PhaseCStore:
             raise PipelineError(f"unsupported direct reference model: {model_id}")
         selected_voice = validate_voice_preset(voice_preset_id)
         if selected_voice is not None and target_voice_path is not None:
-            raise PipelineError("choose either a preset voice or a legacy voice sample, not both")
+            raise PipelineError(
+                "choose either a preset voice or an uploaded voice sample, not both"
+            )
         is_router_route = route_id.startswith("router:")
         workflow_spec = workflow_spec_for_route(route_id) if is_workflow_route(route_id) else None
         if route_id != DIRECT_API_ROUTE and workflow_spec is None and not is_router_route:
@@ -1473,6 +1476,10 @@ def prepare_phase_c_job(
     product_image = _validate_file(product, "target product") if product is not None else None
     source_probe = probe_video(source)
     selected_voice = validate_voice_preset(voice_preset_id)
+    if voice is not None:
+        validate_raw_voice_sample(voice)
+    if selected_voice is not None and voice is not None:
+        raise PipelineError("choose either a preset voice or an uploaded voice sample, not both")
     if selected_voice is not None and source_probe.duration_sec > SPEECH_TO_SPEECH_MAX_SEC:
         raise PipelineError("preset voice conversion supports source videos up to 5 minutes")
     if voice is None and not source_probe.has_audio:

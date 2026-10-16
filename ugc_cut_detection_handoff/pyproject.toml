@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ugc-cut-detection-handoff"
+version = "0.1.0"
+description = "Portable talking-head cut detection and frame-accurate splitting core"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = ["av>=18.0,<19", "numpy>=1.26,<2.4"]
+
+[project.optional-dependencies]
+features = [
+  "mediapipe>=0.10.21,<0.11",
+  "opencv-contrib-python>=4.11,<5",
+  "scipy>=1.11,<2",
+]
+dev = ["pytest>=8.4,<9"]
+
+[project.scripts]
+ugc-cutdetect = "ugc_cutdetect:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cutdetect"]
+include = ["ugc_cutdetect.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

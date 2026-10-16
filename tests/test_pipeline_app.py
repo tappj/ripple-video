@@ -55,7 +55,12 @@ def test_ripple_interface_has_streamlined_generation_flow() -> None:
     assert 'id="previewVideo"' in html
     assert 'id="previewImage"' in html
     assert 'id="voiceSample"' in html
-    assert 'id="fileAudio"' not in html
+    assert 'id="fileAudio"' in html
+    assert "Upload raw audio" in html
+    assert "max 11 seconds" in html
+    assert "new Set(['video','image','audio'])" in html
+    assert "voicePreset.value!==RAW_AUDIO_OPTION" in html
+    assert "Uploaded raw voice reference" in html
     assert "URL.createObjectURL(file)" in html
     assert "Fresh task per clip" in html
     assert "4af4fdf6-a371-4a73-b02d-fdbf116186d5" not in html

@@ -1,3 +1,4 @@
+# Python environments and caches
 .venv/
 .venv311/
 __pycache__/
@@ -5,25 +6,47 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.cutdetect/
+*.egg-info/
+dist/
+build/
+
+# Editors and operating-system files
 .DS_Store
+.idea/
+.vscode/
 
-# Local inputs, generated media, and reports must never be published with the app.
-/outputs/
-/eval/**
-!/eval/.gitkeep
-/plan*.md
-/final.mp4
-/*.mp4
-/*.mp3
-/*.wav
-/*.png
-/*.jpg
-/*.jpeg
-/*.webp
-/*.csv
+# Ripple runtime data, plans, reports, and logs
+.cutdetect/
+outputs/
+eval/**
+!eval/.gitkeep
+plan*.md
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.zip
 
-# Local secrets. Keep the names-only example tracked.
+# Private inputs, outputs, recordings, and screenshots
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.heic
+*.csv
+!docs/images/ripple-studio.png
+
+# Local secrets; keep only the names-only template tracked
 .env
 .env.*
 !.env.example
