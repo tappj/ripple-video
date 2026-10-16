@@ -1,28 +1,30 @@
 # Deployment
 
-Ripple is safest as a local application. Hosting it exposes uploads, generation controls, and a
-paid API credential, so do not publish an unprotected instance.
+Ripple can run locally or as a public demo. Hosting exposes uploads and paid generation controls;
+the server applies the limits described in [PUBLIC_DEMO_LIMITS.md](PUBLIC_DEMO_LIMITS.md).
 
 ## Render Blueprint
 
 1. Fork the repository and create a Render Blueprint from `render.yaml`.
 2. Add `RUNWAYML_API_SECRET` in Render's Environment settings.
-3. Add `ELEVENLABS_API_KEY` only if you want transcription.
+3. Optional direct transcription requires both `ELEVENLABS_API_KEY` and
+   `RIPPLE_ENABLE_TRANSCRIPTION=true`; it is disabled by default and billed separately.
 4. Set every `RUNWAY_*_WORKFLOW_ID` or router ID required by your own Runway setup.
-5. Let Render generate `RIPPLE_ACCESS_PASSWORD`, then retrieve it from the service environment.
+5. Leave `RIPPLE_ACCESS_PASSWORD` unset for public access, or set it for a private instance.
 6. Verify `/healthz` returns `{"status": "ok"}` before uploading non-sensitive test media.
 
-The login username is `ripple`; the password is the generated `RIPPLE_ACCESS_PASSWORD` value.
+If password protection is configured, the login username is `ripple` and the password is the
+`RIPPLE_ACCESS_PASSWORD` value.
 
 ## Required precautions
 
 - Never put API keys in GitHub, `render.yaml`, URLs, browser code, screenshots, or support logs.
-- Keep password protection enabled while the server can spend API credits.
+- Keep Runway automatic refill disabled for a demo funded by a fixed prepaid balance.
 - Configure provider-side spending limits and use only test media you are allowed to upload.
 - Use persistent storage for real workloads. Without it, restarts may erase uploads, job state,
   and generated files.
-- Add individual accounts, quotas, abuse controls, object storage, and a managed job queue before
-  serving untrusted public traffic.
+- The demo limits are per server process. A larger public service needs individual accounts,
+  durable quotas, object storage, and a shared job queue.
 
 ## Configuration
 

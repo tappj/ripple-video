@@ -3,7 +3,7 @@
 Ripple is a local-first tool for finding jump cuts in talking-head videos, splitting the source
 into clips, and reviewing optional AI-assisted recreations in one browser interface.
 
-![Ripple's empty project screen](docs/images/ripple-studio.png)
+![Ripple clip review](https://github.com/user-attachments/assets/cd26795c-620d-44bc-afb5-a4f1d194cd19)
 
 > [!IMPORTANT]
 > AI generation uses paid third-party APIs. Detection and splitting stay local, but files sent for
@@ -34,7 +34,7 @@ Press `Ctrl+C` in the terminal to stop Ripple. Local inputs and outputs are stor
 ## Optional API setup
 
 Cut detection works without API keys. AI recreation requires your own Runway account; optional
-transcription uses ElevenLabs.
+transcription uses ElevenLabs and requires `RIPPLE_ENABLE_TRANSCRIPTION=true` when hosting.
 
 ```bash
 cp .env.example .env
@@ -54,6 +54,19 @@ confirming a generation job.
 - Offers a CLI for detection, splitting, labeling, evaluation, and reports.
 
 Run `cutdetect --help` or `cutdetect pipeline --help` for the command-line options.
+
+## Public demo
+
+The public demo limits source videos to 60 seconds, jobs to 600 estimated Runway credits,
+and generation to two active jobs per server. Submission requests are throttled, and optional
+direct ElevenLabs transcription is disabled by default. See [PUBLIC_DEMO_LIMITS.md](PUBLIC_DEMO_LIMITS.md)
+for the complete limits and their scope. Keep Runway automatic refill disabled to bound prepaid
+credit consumption.
+
+After reviewing and approving clips, choose **Assemble** to stitch and download the final video.
+Paid retries and regeneration are disabled.
+
+![Ripple assembled output](https://github.com/user-attachments/assets/7c75ea52-946a-4b34-a460-f6167c443531)
 
 ## Development
 
@@ -77,5 +90,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Deployment
 
 ## License
 
-[MIT](LICENSE). Third-party models and services have their own terms and are not covered by this
+[MIT](LICENSE.md). Third-party models and services have their own terms and are not covered by this
 license.
